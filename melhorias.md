@@ -6,8 +6,10 @@ Lista levantada em 02/11/2026, em ordem de prioridade sugerida.
 
 A extensão depende do HTML interno do Drive, que o Google muda sem aviso.
 
-- [ ] **Checagem ao carregar:** verificar se os elementos esperados existem (`button[data-test-id="list-layout-button"]`, `div[role="main"]`, `tr[role="row"][data-id]`). Se algo sumir, desligar as colunas sozinho com um aviso, em vez de travar o Drive.
-- [ ] **Teste automático simples:** abrir o Drive, ligar as colunas, navegar duas pastas. Serve para saber em segundos o que quebrou quando o Drive mudar.
+- [x] **Checagem ao carregar:** verificar se os elementos esperados existem (`button[data-test-id="list-layout-button"]`, `div[role="main"]`, `tr[role="row"][data-id]`). Se algo sumir, desligar as colunas sozinho com um aviso, em vez de travar o Drive.
+- [x] **Teste automático simples:** abrir o Drive, ligar as colunas, navegar duas pastas. Serve para saber em segundos o que quebrou quando o Drive mudar.
+
+  Feito: a checagem roda só em Meu Drive e nas pastas (em Computadores o Drive não tem os botões Lista/Grade). Autoteste em `…/drive/my-drive#gdf-teste`; detalhes no README.
 
 ## 2. Arrastar e soltar de volta
 
@@ -37,6 +39,7 @@ A extensão depende do HTML interno do Drive, que o Google muda sem aviso.
 - [ ] Pasta vazia
 - [ ] Drive em inglês
 - [ ] Segunda conta logada (endereço `/u/1/`)
+- [ ] **Computadores aparece vazio nas colunas:** nessa seção o Drive não usa as linhas `tr[role="row"][data-id]` nem tem os botões Lista/Grade, então as colunas não acham nenhum item. Ver como o Drive monta essa lista e ler os itens dali (ou deixar Computadores na visualização nativa).
 - [ ] Teclas que alteram arquivos: Delete/⌘⌫ (lixeira), ⌘C/⌘X/⌘V. Testar com arquivos descartáveis.
 
 ## 6. Distribuição

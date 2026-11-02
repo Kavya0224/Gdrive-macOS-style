@@ -42,9 +42,33 @@ Abra o Drive e clique no botão **Colunas** ao lado de Lista/Grade.
 | Ações | cliques, menu de contexto e teclas são disparados na linha nativa correspondente |
 | Camadas | colunas em `z-index: 5` — acima da lista (contexto 0), abaixo dos menus do Drive (8) |
 
+## Proteção contra mudanças do Google
+
+A extensão depende do HTML interno do Drive. Em **Meu Drive e nas pastas**, ela confere o tempo todo se o que precisa ainda existe.
+Se algo falhar, as colunas se **desligam sozinhas**, aparece um aviso e a lista normal do Drive volta. Clicar em **Colunas** tenta de novo.
+
+| Checagem | Desliga quando |
+|---|---|
+| Área de arquivos (`div[role=main]`) | some por 15 s |
+| Botões Lista/Grade (`button[data-test-id="list-layout-button"]`) | somem por 8 s (sem eles não haveria como desligar as colunas) |
+| Linhas da lista (`tr[role=row][data-id]`) | há itens na tela, mas nenhum nesse formato, por 6 s |
+| Navegação por URL | o Drive não abre duas pastas seguidas |
+| Erros da própria extensão | 5 erros em 20 s |
+
+O motivo fica no console (`[GDrive macOS style]`) e em `<html data-gdf-health="…">` (`ok` quando está tudo bem).
+
+## Autoteste
+
+Abra **https://drive.google.com/drive/my-drive#gdf-teste**. Em poucos segundos a extensão abre Meu Drive, liga as colunas,
+entra numa pasta e numa subpasta, e mostra num painel o que passou (✓) e o que quebrou (✕), etapa por etapa.
+Se as colunas estavam desligadas, ela volta a desligá-las no fim.
+
+Para automatizar: dispare `document.dispatchEvent(new Event('gdf-selftest'))` na página e espere
+`<html data-gdf-test>` virar `ok` ou `falhou`; o relatório completo fica em `data-gdf-test-report` (JSON).
+
 ## Limitações
 
-- Depende do HTML interno do Drive (`data-test-id="list-layout-button"`, `div[role=main]`, `tr[data-id]`); se o Google mudar, os seletores precisam de ajuste.
+- Depende do HTML interno do Drive; quando o Google muda, a proteção acima desliga as colunas e o autoteste mostra o que precisa de ajuste.
 - Cada coluna nova leva o tempo do Drive abrir a pasta (~0,5 s).
 - Arrastar itens entre colunas não está disponível — use Mover (⌥⌘M) ou o menu.
 - A seção "Pessoal/Início" continua na visualização nativa.

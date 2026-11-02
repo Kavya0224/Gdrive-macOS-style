@@ -10,6 +10,9 @@
   // Permite testar fora da extensão com um armazenamento simulado.
   const EXT = globalThis.__GDF_EXT__ || (typeof chrome !== 'undefined' ? chrome : null);
   const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+  // Autoteste pedido pela URL (…/drive/my-drive#gdf-teste). Lido já no document_start, antes do Drive mexer na URL.
+  const TEST_HASH = /^#gdf-teste\b/;
+  const WANT_TEST = TEST_HASH.test(location.hash);
 
   // ================================================================ constantes
 
@@ -58,6 +61,7 @@
     nativeDirty: true,
     mainObs: null,
     observedMain: null,
+    broken: null, // { id, msg, detail } quando a proteção desligou as colunas
   };
   const ui = { root: null, strip: null, layer: null, preview: null, previewKey: '' };
 
@@ -287,10 +291,10 @@
   let syncT = 0;
   function scheduleSync() {
     if (syncT) return;
-    syncT = setTimeout(() => {
+    syncT = setTimeout(guarded('sync', () => {
       syncT = 0;
       syncNative();
-    }, 80);
+    }), 80);
   }
 
   function syncNative() {
@@ -318,7 +322,10 @@
         N.settled = true;
         N.failed = !!sig && sig === N.prevSig;
       }
-      if (N.settled) S.nativeDirty = true;
+      if (N.settled) {
+        S.nativeDirty = true;
+        noteNav(!N.failed);
+      }
     }
     S.lastSig = sig;
     if (!N.settled || !isShowing()) return;
@@ -481,7 +488,7 @@
   // Reflete a seleção das colunas na lista nativa (com pequeno atraso para não "brigar" com as setas).
   function reconcile() {
     const my = ++S.recSeq;
-    setTimeout(async () => {
+    setTimeout(guarded('reconcile', async () => {
       if (my !== S.recSeq || !isShowing()) return;
       const stale = () => my !== S.recSeq;
       const c = S.cols[S.active];
@@ -495,7 +502,7 @@
         if (!(await ensureNative(c.key, stale)) || stale()) return;
         await applyNativeSelection(sel.map((i) => i.id));
       }
-    }, 140);
+    }), 140);
   }
 
   // Atalho para pasta: o destino só é conhecido abrindo pelo próprio Drive.
@@ -1095,10 +1102,11 @@
     window.addEventListener(type, (e) => {
       if (!ui.root || !ui.root.contains(e.target)) return;
       e.stopImmediatePropagation();
-      if (type === 'keydown') onKey(e);
+      if (type === 'keydown') guardedKey(e);
     }, true);
   }
 
+  const guardedKey = (e) => guarded('teclado', onKey)(e);
   function onKey(e) {
     const ci = S.active;
     const c = S.cols[ci];
@@ -1309,6 +1317,8 @@
       toast('A visualização em colunas não está disponível nesta seção do Drive.');
       return;
     }
+    // Depois de um desligamento automático, clicar de novo tenta outra vez (a checagem continua valendo).
+    if (S.broken) resetGuard();
     if (!S.enabled) setEnabled(true);
   }
 
@@ -1342,7 +1352,7 @@
     if (show) {
       if (!ui.root.isConnected) document.body.append(ui.root);
       layout();
-      if (S.needsBuild) build();
+      if (S.needsBuild) build().catch((e) => reportError(e, 'build'));
     } else if (ui.root && ui.root.isConnected) {
       ui.root.remove();
     }
@@ -1380,17 +1390,259 @@
     if (S.enabled && isSupported(S.key) && ui.root && !ui.root.isConnected && findMain()) update();
     layout();
     if (isShowing()) syncNative();
+    guardCheck();
   }
 
   // ---------------------------------------------------------------- toast
 
   let toastEl = null;
-  function toast(msg) {
+  function toast(msg, ms = 5000) {
     if (toastEl) toastEl.remove();
-    const el = h('div', { class: 'gdf-toast', role: 'status' }, h('span', null, msg));
+    const el = h('div', { class: 'gdf-toast', role: 'status' },
+      h('span', null, msg),
+      h('button', { class: 'gdf-toast-x', 'aria-label': 'Fechar', onclick: () => el.remove() }, '×'));
     ui.layer.append(el);
     toastEl = el;
-    setTimeout(() => el.remove(), 5000);
+    setTimeout(() => el.remove(), ms);
+  }
+
+  // ================================================================ proteção contra mudanças do Drive
+  //
+  // A extensão depende do HTML interno do Drive. Se algo essencial sumir (ou o código começar a dar
+  // erro), as colunas se desligam sozinhas com um aviso e a lista normal do Drive volta a aparecer.
+  // A checagem de elementos só roda em Meu Drive e nas pastas: em outras seções (ex.: Computadores)
+  // o Drive não tem os botões Lista/Grade nem as mesmas linhas, e isso não é defeito.
+
+  const GUARD_MSG = {
+    main: 'a área de arquivos do Drive não foi encontrada',
+    toggle: 'os botões Lista/Grade do Drive não foram encontrados',
+    rows: 'a lista de arquivos do Drive não pôde ser lida',
+    nav: 'o Drive não abriu as pastas pedidas pelas colunas',
+    error: 'a extensão encontrou erros repetidos',
+  };
+  const GUARD_WAIT = { main: 15000, toggle: 8000, rows: 6000 };
+  const G = { key: null, since: {}, navFails: 0, errors: [] };
+
+  function setHealth(v) {
+    document.documentElement.dataset.gdfHealth = v;
+  }
+
+  function guardCheck() {
+    if (!S.enabled || S.broken || !isFolderKey(S.key) || document.visibilityState !== 'visible') {
+      G.since = {};
+      return;
+    }
+    if (G.key !== S.key) {
+      G.key = S.key;
+      G.since = {};
+    }
+    const main = findMain();
+    const N = S.nat;
+    holds('main', !main);
+    holds('toggle', !!main && !document.querySelector('.gdf-toggle'));
+    // Há itens na área (elementos com data-id), mas nenhum no formato de linha que a extensão lê.
+    holds('rows', !!main && N.key === S.key && N.settled && !N.failed
+      && !nativeRows(nativeGrid(main)).length && !!main.querySelector('[data-id]'));
+  }
+  function holds(id, bad) {
+    if (!bad) {
+      delete G.since[id];
+      return;
+    }
+    const now = Date.now();
+    G.since[id] = G.since[id] || now;
+    if (now - G.since[id] > GUARD_WAIT[id]) shutDown(id);
+  }
+
+  // Duas pastas seguidas que o Drive não abriu = a navegação pela URL parou de funcionar.
+  function noteNav(ok) {
+    if (ok) G.navFails = 0;
+    else if (++G.navFails >= 2 && S.enabled) shutDown('nav');
+  }
+
+  function reportError(e, where) {
+    console.error(`[GDrive macOS style] erro em ${where}:`, e);
+    const now = Date.now();
+    G.errors = G.errors.filter((t) => now - t < 20000);
+    G.errors.push(now);
+    if (G.errors.length >= 5 && S.enabled) shutDown('error', `${where}: ${(e && e.message) || e}`);
+  }
+  function guarded(where, fn) {
+    return function (...args) {
+      try {
+        const r = fn.apply(this, args);
+        if (r && typeof r.catch === 'function') r.catch((e) => reportError(e, where));
+        return r;
+      } catch (e) {
+        reportError(e, where);
+      }
+    };
+  }
+
+  function shutDown(id, detail = '') {
+    if (S.broken) return;
+    S.broken = { id, msg: GUARD_MSG[id], detail };
+    setHealth(id);
+    console.warn(`[GDrive macOS style] Colunas desligadas: ${S.broken.msg}${detail ? ` (${detail})` : ''}.`);
+    try {
+      if (S.enabled) setEnabled(false);
+    } catch (e) {
+      console.error('[GDrive macOS style] erro ao desligar as colunas:', e);
+      if (ui.root) ui.root.remove();
+    }
+    toast(`Colunas desligadas: ${S.broken.msg}. O Google pode ter mudado o Drive; a lista normal continua funcionando. Clique em Colunas para tentar de novo.`, 15000);
+  }
+
+  function resetGuard() {
+    S.broken = null;
+    G.since = {};
+    G.navFails = 0;
+    G.errors = [];
+    setHealth('ok');
+  }
+
+  // ================================================================ autoteste
+  //
+  // Abre Meu Drive, liga as colunas e navega duas pastas, mostrando o resultado num painel.
+  // Para rodar: abra https://drive.google.com/drive/my-drive#gdf-teste
+  // (ou dispare document.dispatchEvent(new Event('gdf-selftest')) num teste automatizado).
+  // O resultado também fica em <html data-gdf-test="ok|falhou"> e em data-gdf-test-report (JSON).
+
+  const T = { running: false, panel: null };
+  class TestFail extends Error {}
+  const fail = (msg) => {
+    throw new TestFail(msg);
+  };
+
+  async function selfTest() {
+    if (T.running) return;
+    T.running = true;
+    const html = document.documentElement;
+    html.dataset.gdfTest = 'rodando';
+    const steps = [];
+    const t0 = performance.now();
+    const startKey = curKey();
+    const wasEnabled = S.enabled;
+    const render = () => renderTestPanel(steps, null);
+    let failed = false;
+
+    const step = async (label, fn) => {
+      const s = { label, status: failed ? 'skip' : 'run', detail: failed ? 'não executado' : '', ms: 0 };
+      steps.push(s);
+      if (failed) return render();
+      render();
+      const t = performance.now();
+      try {
+        const r = await fn();
+        s.status = r && r.skip ? 'skip' : 'ok';
+        s.detail = (r && (r.detail || (typeof r === 'string' ? r : ''))) || '';
+      } catch (e) {
+        s.status = 'fail';
+        s.detail = e instanceof TestFail ? e.message : `erro inesperado: ${e && e.message}`;
+        failed = true;
+      }
+      s.ms = Math.round(performance.now() - t);
+      render();
+    };
+
+    let skipSecond = false;
+    await step('Abrir Meu Drive', async () => {
+      if (!(await waitFor(findMain, 15000))) fail('área de arquivos (div[role="main"]) não encontrada');
+      if (curKey() !== '/drive/my-drive') {
+        navigateDrive('/drive/my-drive');
+        if (!(await waitSettled('/drive/my-drive'))) fail('o Drive não abriu Meu Drive');
+      }
+      return pageTitle();
+    });
+    await step('Botão Colunas ao lado de Lista/Grade', async () => {
+      if (!(await waitFor(() => document.querySelector('.gdf-toggle'), 8000))) {
+        fail('botões Lista/Grade (button[data-test-id="list-layout-button"]) não encontrados');
+      }
+    });
+    await step('Ligar as colunas', async () => {
+      if (S.broken) resetGuard();
+      S.needsBuild = true;
+      if (S.enabled) update();
+      else setEnabled(true);
+      const built = () => isShowing() && !S.needsBuild && S.cols[0] && S.cols[0].key === '/drive/my-drive';
+      if (!(await waitFor(built, 3000))) fail('as colunas não apareceram');
+    });
+    await step('Ler os itens de Meu Drive', async () => {
+      const c = S.cols[0];
+      await waitFor(() => S.broken || c.error || (c.items && c.items.length), 12000);
+      if (S.broken) fail(S.broken.msg);
+      if (c.error) fail('o Drive não abriu a pasta');
+      if (!c.items || !c.items.length) fail('nenhum item lido da lista do Drive (tr[role="row"][data-id])');
+      if (c.items.every((i) => !i.name)) fail('itens sem nome (o Drive mudou onde mostra o nome)');
+      const nf = c.items.filter((i) => i.isFolder).length;
+      return `${plural(c.items.length, '1 item', '# itens')}, ${plural(nf, '1 pasta', '# pastas')}`;
+    });
+    const openFolderIn = async (ci) => {
+      const c = S.cols[ci];
+      if (!c || !c.items) fail('coluna anterior não está aberta');
+      const f = c.items.find((i) => i.isFolder && !i.isShortcut);
+      if (!f) {
+        skipSecond = true;
+        return { skip: true, detail: ci === 0 ? 'nenhuma pasta reconhecida (se houver pastas, a detecção quebrou)' : 'a pasta não tem subpastas' };
+      }
+      selectIds(ci, [f.id]);
+      const next = S.cols[ci + 1];
+      if (!next) fail(`a coluna de “${f.name}” não foi criada`);
+      const ok = await waitFor(() => S.broken || next.error
+        || (next.items && curKey() === next.key && S.nat.key === next.key && S.nat.settled), 15000);
+      if (S.broken) fail(S.broken.msg);
+      if (!ok) fail(`“${f.name}” não carregou em 15 s`);
+      if (next.error) fail(`o Drive não abriu “${f.name}”`);
+      return `“${f.name}”: ${plural(next.items.length, '1 item', '# itens')}`;
+    };
+    await step('Abrir a 1ª pasta', () => openFolderIn(0));
+    await step('Abrir uma pasta dentro dela', () => (skipSecond ? { skip: true, detail: 'sem pasta para abrir' } : openFolderIn(1)));
+    await step('Nenhum alerta da proteção', () => {
+      if (S.broken) fail(S.broken.msg);
+    });
+
+    // Devolve o Drive como estava.
+    if (!wasEnabled && S.enabled) setEnabled(false);
+    if (!wasEnabled && curKey() !== startKey) navigateDrive(startKey);
+
+    const ok = !steps.some((s) => s.status === 'fail');
+    const total = Math.round(performance.now() - t0);
+    html.dataset.gdfTest = ok ? 'ok' : 'falhou';
+    html.dataset.gdfTestReport = JSON.stringify({ ok, ms: total, steps });
+    console.info(`[GDrive macOS style] autoteste: ${ok ? 'OK' : 'FALHOU'} em ${(total / 1000).toFixed(1)} s`);
+    console.table(steps.map((s) => ({ etapa: s.label, resultado: s.status, detalhe: s.detail, ms: s.ms })));
+    renderTestPanel(steps, { ok, ms: total });
+    T.running = false;
+  }
+
+  function renderTestPanel(steps, done) {
+    const MARK = { run: '…', ok: '✓', fail: '✕', skip: '–' };
+    if (!T.panel || !T.panel.isConnected) {
+      T.panel = h('div', { class: 'gdf-test', role: 'status' });
+      ui.layer.append(T.panel);
+    }
+    const sum = !done ? 'Testando…'
+      : done.ok ? `Tudo certo em ${(done.ms / 1000).toFixed(1).replace('.', ',')} s`
+      : `Falhou: ${(steps.find((s) => s.status === 'fail') || {}).label}`;
+    T.panel.replaceChildren(
+      h('div', { class: 'gdf-test-head' }, 'Autoteste — GDrive macOS style'),
+      h('ol', { class: 'gdf-test-steps' }, steps.map((s) => h('li', { class: 'is-' + s.status },
+        h('span', { class: 'gdf-test-mark' }, MARK[s.status]),
+        h('span', { class: 'gdf-test-txt' },
+          h('span', null, s.label),
+          s.detail ? h('span', { class: 'gdf-test-detail' }, s.detail) : null),
+        s.ms ? h('span', { class: 'gdf-test-ms' }, s.ms < 1000 ? `${s.ms} ms` : `${(s.ms / 1000).toFixed(1).replace('.', ',')} s`) : null))),
+      h('div', { class: 'gdf-test-foot' + (done ? (done.ok ? ' is-ok' : ' is-fail') : '') },
+        h('span', null, sum),
+        done ? h('span', { class: 'gdf-test-btns' },
+          h('button', { class: 'gdf-test-btn', onclick: () => selfTest() }, 'Rodar de novo'),
+          h('button', { class: 'gdf-test-btn', onclick: () => T.panel.remove() }, 'Fechar')) : null));
+  }
+
+  function maybeTestFromHash() {
+    if (!TEST_HASH.test(location.hash)) return false;
+    history.replaceState(history.state, '', location.pathname + location.search);
+    return true;
   }
 
   // ================================================================ boot
@@ -1409,10 +1661,16 @@
   function start() {
     buildUi();
     document.body.append(ui.layer);
-    new MutationObserver(throttle(injectToggle, 150)).observe(document.body, { childList: true, subtree: true });
-    injectToggle();
-    tick();
-    setInterval(tick, 250);
+    setHealth('ok');
+    const safeToggle = guarded('botão', injectToggle);
+    const safeTick = guarded('tick', tick);
+    new MutationObserver(throttle(safeToggle, 150)).observe(document.body, { childList: true, subtree: true });
+    safeToggle();
+    safeTick();
+    setInterval(safeTick, 250);
+    document.addEventListener('gdf-selftest', () => selfTest());
+    window.addEventListener('hashchange', () => maybeTestFromHash() && selfTest());
+    if (WANT_TEST) setTimeout(selfTest, 0);
     window.addEventListener('resize', layout);
     // Se o Drive focar a lista escondida (ao selecionarmos itens nela), devolve o foco às colunas.
     document.addEventListener('focusin', (e) => {
@@ -1428,6 +1686,9 @@
       S.wantFocus = false;
     }, true);
   }
+
+  // Tira o #gdf-teste da URL antes de o Drive iniciar (o teste em si roda no start()).
+  if (WANT_TEST) maybeTestFromHash();
 
   Promise.resolve()
     .then(() => (EXT ? EXT.storage.sync.get(['gdfEnabled', 'gdfColW']) : {}))
