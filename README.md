@@ -1,107 +1,113 @@
 # GDrive macOS style
 
-Extensão do Chrome que adiciona ao Google Drive uma **visualização em colunas no estilo do Finder**.
-Não usa API nem credenciais: lê os itens da própria lista do Drive e repassa seleção, menus e atalhos
-para a lista nativa, que continua existindo (escondida) embaixo das colunas.
+A Chrome extension that adds a **Finder-style column view** to Google Drive.
+It uses no API and no credentials: it reads items from Drive's own list and forwards selection, menus and shortcuts
+to the native list, which keeps running (hidden) underneath the columns.
 
-## Instalação
+![GDrive macOS style: Google Drive in Finder-style column view](docs/screenshot.png)
 
-`chrome://extensions` → ative **Modo do desenvolvedor** → **Carregar sem compactação** → selecione a pasta `extension/`.
-Abra o Drive e clique no botão **Colunas** ao lado de Lista/Grade.
+## Installation
 
-## O que faz
+Open `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → select the `extension/` folder.
+Open Drive and click the **Columns** button next to List/Grid.
 
-- Barra lateral, cabeçalho (com o caminho da pasta) e botão **Novo** do Drive intactos
-- Navegação por colunas com mouse e teclado; colunas redimensionáveis (⌥ = todas)
-- Pré-visualização (miniatura real) + informações do arquivo
-- Barra de seleção, menu de contexto, diálogos e visualizador **nativos do Drive**
-- Abrindo uma pasta profunda pela URL, monta o caminho completo a partir do breadcrumb
-- Pastas grandes são carregadas por completo automaticamente (o Drive pagina de 50 em 50)
-- **Arrastar e soltar**: mover itens entre colunas e enviar arquivos arrastados do computador (detalhes abaixo)
-- Funciona em: Meu Drive, pastas, Compartilhados comigo, Recentes, Com estrela, Lixeira, Drives compartilhados, Computadores e busca
+## Features
 
-## Atalhos
+- Drive's sidebar, header (with the folder path) and **New** button stay intact
+- Column navigation with mouse and keyboard; resizable columns (⌥ = all of them)
+- Preview (real thumbnail) + file info
+- Drive's **native** selection bar, context menu, dialogs and viewer
+- Opening a deep folder from its URL builds the full path from the breadcrumb
+- Large folders are loaded in full automatically (Drive pages them 50 at a time)
+- **Drag and drop**: move items between columns and upload files dragged from your computer (details below)
+- Works in: My Drive, folders, Shared with me, Recent, Starred, Trash, Shared drives, Computers and search
 
-| Tecla | Ação |
+## Keyboard shortcuts
+
+| Key | Action |
 |---|---|
-| ↑ ↓ ← → | navegar |
-| letras | ir para o item pelo nome |
-| Espaço | visualizar (visualizador do Drive) |
-| ⌘O / ⌘↓ / duplo clique | abrir |
-| Enter | renomear (diálogo do Drive) |
-| ⌘⌫ / Delete | mover para a lixeira |
-| ⌘C, depois ⌘V | fazer uma cópia (do Drive; o Drive não tem recortar) |
-| ⌥⌘ + tecla | atalhos do Drive (⌥⌘A compartilhar, ⌥⌘M mover, ⌥⌘S estrela…) |
-| ⌘A, ⌘/Shift + clique | seleção múltipla |
+| ↑ ↓ ← → | navigate |
+| letters | jump to an item by name |
+| Space | preview (Drive's viewer) |
+| ⌘O / ⌘↓ / double-click | open |
+| Enter | rename (Drive's dialog) |
+| ⌘⌫ / Delete | move to trash |
+| ⌘C, then ⌘V | make a copy (Drive's; Drive has no cut) |
+| ⌥⌘ + key | Drive shortcuts (⌥⌘A share, ⌥⌘M move, ⌥⌘S star…) |
+| ⌘A, ⌘/Shift + click | multiple selection |
 
-## Arrastar e soltar
+## Drag and drop
 
-| Gesto | Resultado |
+| Gesture | Result |
 |---|---|
-| Arrastar item(ns) para uma pasta de qualquer coluna | move para essa pasta |
-| Arrastar para o espaço vazio de uma coluna | move para a pasta daquela coluna |
-| Parar ~1 s em cima de uma pasta durante o arraste | abre a pasta (como a "mola" do Finder) |
-| Arrastar arquivos do computador para uma coluna ou pasta | envia para essa pasta (upload do Drive) |
-| Arrastar item para outro app ou aba | entrega o link do arquivo |
+| Drag item(s) onto a folder in any column | moves them into that folder |
+| Drag onto the empty area of a column | moves them into that column's folder |
+| Hover ~1 s over a folder while dragging | opens the folder (like Finder's "spring-loaded" folders) |
+| Drag files from your computer onto a column or folder | uploads them to that folder (Drive upload) |
+| Drag an item to another app or tab | drops the file's link |
 
-- Arrastar um item selecionado leva a seleção inteira; um item não selecionado vai sozinho.
-- Uma pasta não pode ir para dentro dela mesma, e soltar na pasta onde o item já está não faz nada.
-- Não vale em Lixeira e Computadores.
+- Dragging a selected item takes the whole selection; an unselected item goes alone.
+- A folder can't be moved into itself, and dropping onto the folder the item is already in does nothing.
+- Not available in Trash and Computers.
 
-**Como o mover funciona:** o Drive não tem recortar/colar (⌘C → ⌘V só faz uma cópia), e o arraste da lista
-nativa só move para o que está visível na mesma lista. Em outra pasta ele **cria um atalho** em vez de mover.
-Por isso a extensão usa a janela **Mover** do Drive (⌥⌘M): seleciona os itens na lista nativa, abre a janela,
-cola o endereço da pasta de destino na busca dela e clica em "Mover" na linha da pasta. A janela trabalha **invisível
-e sem bloquear cliques**. Enquanto isso, os itens ficam esmaecidos e uma etiqueta "Movendo…" aparece no rodapé das
-colunas: menos de 1 s, ou uns 3–5 s na primeira vez depois de carregar a página. No fim aparece o aviso do Drive
-com **Desfazer**. Se o Drive fizer alguma pergunta na janela, ela volta a aparecer.
+**How moving works:** Drive has no cut/paste (⌘C → ⌘V only makes a copy), and dragging in the native list
+only moves to folders visible in that same list. Anywhere else it **creates a shortcut** instead of moving.
+So the extension uses Drive's **Move** dialog (⌥⌘M): it selects the items in the native list, opens the dialog,
+pastes the destination folder's URL into its search box and clicks "Move" on the folder's row. The dialog works
+**invisibly and without blocking clicks**. Meanwhile the items are dimmed and a "Moving…" label appears at the bottom
+of the columns: under 1 s, or about 3–5 s the first time after the page loads. At the end Drive shows its toast
+with **Undo**. If Drive asks a question in the dialog, the dialog becomes visible again.
 
-**Como o envio funciona:** enquanto os arquivos passam sobre as colunas, a lista nativa já abre a pasta de destino
-e recebe o `dragenter`/`dragover`. Ao soltar, o `drop` é repassado a ela, e o Drive faz o upload com o painel de
-progresso no canto inferior direito. Se `dragover` e `drop` chegarem no mesmo instante, o Drive faz o upload mas
-esconde o painel; por isso os dois chegam em momentos diferentes.
-Se a pasta ainda não tinha aberto, os arquivos são enviados assim que ela abrir. Nesse caso pastas arrastadas
-do computador não vão (o navegador só entrega o conteúdo delas durante o próprio "drop"), e um aviso pede para soltar de novo.
+**How uploading works:** while files are dragged over the columns, the native list already opens the destination
+folder and receives `dragenter`/`dragover`. On drop, the `drop` event is forwarded to it, and Drive uploads with its
+progress panel in the bottom-right corner. If `dragover` and `drop` arrive at the same instant, Drive uploads but
+hides the panel, so the two are delivered at different moments.
+If the folder hadn't opened yet, the files are uploaded as soon as it does. In that case folders dragged from the
+computer don't go through (the browser only hands over their contents during the "drop" itself), and a notice asks you to drop again.
 
-## Como funciona
+## How it works
 
-| Peça | Detalhe |
+| Piece | Detail |
 |---|---|
-| Dados | linhas `tr[role=row][data-id]` da lista nativa; tipo vem do `aria-label`, ícones são clonados. Em Computadores, cards `div[role=gridcell][data-id]` |
-| Navegação | `history.replaceState` + `popstate` faz o Drive abrir a pasta sem recarregar |
-| Ações | cliques, menu de contexto e teclas são disparados na linha nativa correspondente |
-| Mover | janela Mover (`iframe` `/picker/minpick`, mesma origem): linhas `tr[data-target-folder-id]` e busca por URL da pasta |
-| Upload | `dragenter`/`dragover`/`drop` repassados ao `[role=grid]` da lista nativa |
-| Camadas | colunas em `z-index: 5` — acima da lista (contexto 0), abaixo dos menus do Drive (8) |
+| Data | `tr[role=row][data-id]` rows from the native list; type comes from `aria-label`, icons are cloned. In Computers, `div[role=gridcell][data-id]` cards |
+| Navigation | `history.replaceState` + `popstate` makes Drive open the folder without reloading |
+| Actions | clicks, context menu and keys are dispatched on the matching native row |
+| Move | Move dialog (`iframe` `/picker/minpick`, same origin): `tr[data-target-folder-id]` rows and search by folder URL |
+| Upload | `dragenter`/`dragover`/`drop` forwarded to the native list's `[role=grid]` |
+| Layers | columns at `z-index: 5` — above the list (context 0), below Drive's menus (8) |
 
-## Proteção contra mudanças do Google
+## Protection against Google changes
 
-A extensão depende do HTML interno do Drive. Em **Meu Drive e nas pastas**, ela confere o tempo todo se o que precisa ainda existe.
-Se algo falhar, as colunas se **desligam sozinhas**, aparece um aviso e a lista normal do Drive volta. Clicar em **Colunas** tenta de novo.
+The extension depends on Drive's internal HTML. In **My Drive and folders**, it constantly checks that what it needs still exists.
+If something fails, the columns **turn themselves off**, a notice appears and Drive's normal list comes back. Clicking **Columns** tries again.
 
-| Checagem | Desliga quando |
+| Check | Turns off when |
 |---|---|
-| Área de arquivos (`div[role=main]`) | some por 15 s |
-| Botões Lista/Grade (`button[data-test-id="list-layout-button"]`) | somem por 8 s (sem eles não haveria como desligar as colunas) |
-| Linhas da lista (`tr[role=row][data-id]`) | há itens na tela, mas nenhum nesse formato, por 6 s |
-| Navegação por URL | o Drive não abre duas pastas seguidas |
-| Erros da própria extensão | 5 erros em 20 s |
+| File area (`div[role=main]`) | missing for 15 s |
+| List/Grid buttons (`button[data-test-id="list-layout-button"]`) | missing for 8 s (without them there'd be no way to turn the columns off) |
+| List rows (`tr[role=row][data-id]`) | items are on screen but none in this format, for 6 s |
+| URL navigation | Drive fails to open two folders in a row |
+| The extension's own errors | 5 errors in 20 s |
 
-O motivo fica no console (`[GDrive macOS style]`) e em `<html data-gdf-health="…">` (`ok` quando está tudo bem).
+The reason is logged to the console (`[GDrive macOS style]`) and set on `<html data-gdf-health="…">` (`ok` when all is well).
 
-## Autoteste
+## Self-test
 
-Abra **https://drive.google.com/drive/my-drive#gdf-teste**. Em poucos segundos a extensão abre Meu Drive, liga as colunas,
-entra numa pasta e numa subpasta, e mostra num painel o que passou (✓) e o que quebrou (✕), etapa por etapa.
-Se as colunas estavam desligadas, ela volta a desligá-las no fim.
+Open **https://drive.google.com/drive/my-drive#gdf-teste**. Within a few seconds the extension opens My Drive, turns on the columns,
+enters a folder and a subfolder, and shows a panel with what passed (✓) and what broke (✕), step by step.
+If the columns were off, it turns them off again at the end.
 
-Para automatizar: dispare `document.dispatchEvent(new Event('gdf-selftest'))` na página e espere
-`<html data-gdf-test>` virar `ok` ou `falhou`; o relatório completo fica em `data-gdf-test-report` (JSON).
+To automate it: dispatch `document.dispatchEvent(new Event('gdf-selftest'))` on the page and wait for
+`<html data-gdf-test>` to become `ok` or `falhou` (failed); the full report is in `data-gdf-test-report` (JSON).
 
-## Limitações
+## Limitations
 
-- Depende do HTML interno do Drive; quando o Google muda, a proteção acima desliga as colunas e o autoteste mostra o que precisa de ajuste.
-- Cada coluna nova leva o tempo do Drive abrir a pasta (~0,5 s).
-- Mover por arraste depende da janela Mover do Drive; se ela mudar, aparece um aviso e o caminho é usar Mover (⌥⌘M) no menu.
-- A seção "Pessoal/Início" continua na visualização nativa.
-- Em Computadores o Drive não mostra os botões Lista/Grade, então o botão Colunas também não aparece lá: as colunas seguem ligadas ou desligadas conforme o resto do Drive.
+- Depends on Drive's internal HTML; when Google changes it, the protection above turns the columns off and the self-test shows what needs fixing.
+- Each new column takes as long as Drive needs to open the folder (~0.5 s).
+- Drag-to-move depends on Drive's Move dialog; if it changes, a notice appears and the fallback is Move (⌥⌘M) from the menu.
+- The "Home" section stays in the native view.
+- In Computers, Drive doesn't show the List/Grid buttons, so the Columns button doesn't appear there either: columns stay on or off according to the rest of Drive.
+
+## Roadmap
+
+See [roadmap.md](roadmap.md).
