@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Drive Finder — visualização em colunas",
-  "short_name": "Drive Finder",
+  "name": "GDrive macOS style",
+  "short_name": "GDrive macOS style",
   "version": "2.0.0",
   "description": "Adiciona ao Google Drive uma visualização em colunas no estilo do Finder, com pré-visualização e informações do arquivo.",
   "permissions": ["storage"],

@@ -1,4 +1,4 @@
-# Melhorias futuras — Drive Finder
+# Melhorias futuras — GDrive macOS style
 
 Lista levantada em 02/11/2026, em ordem de prioridade sugerida.
 

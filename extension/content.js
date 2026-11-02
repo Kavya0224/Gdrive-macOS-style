@@ -1,4 +1,4 @@
-// Drive Finder — content script
+// GDrive macOS style — content script
 // Visualização em colunas (estilo Finder) para o Google Drive, sem API e sem credenciais:
 // lê os itens da própria lista do Drive e repassa seleção, menus e atalhos para a lista nativa,
 // que continua existindo (escondida) embaixo das colunas.
@@ -583,6 +583,10 @@
     const items = selItems(c);
     if (items.length !== 1) return;
     if (items[0].isFolder) return goRight();
+    // Abre direto pela URL, ainda dentro do gesto do usuário: o duplo clique sintético na lista
+    // nativa não é confiável (o Drive ignora eventos não confiáveis e o pop-up perde a ativação).
+    const url = `https://drive.google.com/open?id=${encodeURIComponent(items[0].id)}&authuser=${authuser()}`;
+    if (window.open(url, '_blank')) return;
     if (!(await prepareNative())) return;
     const tr = rowById(items[0].id);
     if (tr) {

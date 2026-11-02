@@ -1,4 +1,4 @@
-# Drive Finder
+# GDrive macOS style
 
 Extensão do Chrome que adiciona ao Google Drive uma **visualização em colunas no estilo do Finder**.
 Não usa API nem credenciais: lê os itens da própria lista do Drive e repassa seleção, menus e atalhos
