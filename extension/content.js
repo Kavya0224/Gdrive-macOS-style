@@ -62,6 +62,14 @@
     mainObs: null,
     observedMain: null,
     broken: null, // { id, msg, detail } quando a proteção desligou as colunas
+    drag: null, // itens sendo arrastados nas colunas: { srcKey, ids, items }
+    dropT: null, // alvo destacado durante o arraste: { col, item, row, key }
+    spring: { id: null, t: 0 },
+    prefetch: { key: null, t: 0 },
+    busy: false, // movendo itens pela janela "Mover" do Drive
+    moving: new Set(), // ids sendo movidos (aparecem esmaecidos)
+    natDrop: null, // lista nativa que já recebeu o dragenter de arquivos: { key, el, dt }
+    rootId: null, // id da pasta "Meu Drive" (vem do breadcrumb)
   };
   const ui = { root: null, strip: null, layer: null, preview: null, previewKey: '' };
 
@@ -132,6 +140,10 @@
   const CARD_SEL = 'div[role="gridcell"][data-id]';
   const itemSel = () => (curKey() === COMPUTERS_KEY ? CARD_SEL : ROW_SEL);
   const keyForId = (id) => '/drive/folders/' + id;
+  function folderIdOf(key) {
+    const m = (key || '').match(/^\/drive\/folders\/([\w-]+)/);
+    return m ? m[1] : key === '/drive/my-drive' ? S.rootId : null;
+  }
   function authuser() {
     const m = location.pathname.match(/^\/drive\/u\/(\d+)/);
     return m ? m[1] : '0';
@@ -496,6 +508,8 @@
 
   // Leva a lista nativa para a pasta da coluna ativa e seleciona lá os mesmos itens.
   async function prepareNative() {
+    // Um "mover" em andamento usa a seleção da lista nativa: espera ele terminar.
+    if (S.busy && !(await waitFor(() => !S.busy, 20000))) return false;
     const my = ++S.recSeq;
     const c = S.cols[S.active];
     if (!c) return false;
@@ -509,7 +523,8 @@
   function reconcile() {
     const my = ++S.recSeq;
     setTimeout(guarded('reconcile', async () => {
-      if (my !== S.recSeq || !isShowing()) return;
+      // Durante um "mover" a lista nativa está ocupada; no fim ele mesmo chama reconcile().
+      if (my !== S.recSeq || !isShowing() || S.busy) return;
       const stale = () => my !== S.recSeq;
       const c = S.cols[S.active];
       if (!c) return;
@@ -605,6 +620,8 @@
     dispatchKeyToNative(init);
   }
 
+  const openUrl = (it) => `https://drive.google.com/open?id=${encodeURIComponent(it.id)}&authuser=${authuser()}`;
+
   async function openSelected() {
     const c = S.cols[S.active];
     const items = selItems(c);
@@ -612,8 +629,7 @@
     if (items[0].isFolder) return goRight();
     // Abre direto pela URL, ainda dentro do gesto do usuário: o duplo clique sintético na lista
     // nativa não é confiável (o Drive ignora eventos não confiáveis e o pop-up perde a ativação).
-    const url = `https://drive.google.com/open?id=${encodeURIComponent(items[0].id)}&authuser=${authuser()}`;
-    if (window.open(url, '_blank')) return;
+    if (window.open(openUrl(items[0]), '_blank')) return;
     if (!(await prepareNative())) return;
     const tr = rowById(items[0].id);
     if (tr) {
@@ -866,6 +882,385 @@
     if (hit) selectIds(S.active, [hit.id]);
   }
 
+  // ================================================================ arrastar e soltar
+  //
+  // Mover entre colunas: o Drive não tem recortar/colar, e o arraste nativo só move para o que
+  // está visível na mesma lista (em outra pasta ele cria um atalho). Por isso a extensão usa a
+  // janela "Mover" (⌥⌘M): seleciona os itens na lista nativa, abre a janela, cola o endereço da
+  // pasta de destino na busca dela e clica em "Mover" na linha da pasta.
+  //
+  // Arquivos vindos do computador: a lista nativa vai para a pasta de destino e recebe o mesmo
+  // "drop" que o usuário fez nas colunas.
+
+  const DRAG_TYPE = 'application/x-gdf-items';
+  const SPRING_MS = 800; // parar em cima de uma pasta durante o arraste abre a pasta
+  const NO_DROP_KEYS = new Set([COMPUTERS_KEY, '/drive/trash']);
+
+  function canDragFrom(c) {
+    return !!(c && c.items && isSupported(c.key) && !NO_DROP_KEYS.has(c.key));
+  }
+
+  function dragKind(dt) {
+    const types = dt ? [...dt.types] : [];
+    if (types.includes(DRAG_TYPE)) return S.drag ? 'items' : null;
+    return types.includes('Files') ? 'files' : null;
+  }
+
+  // Pasta em que um item seria solto: a pasta sob o cursor ou, fora dela, a pasta da própria coluna.
+  function dropTargetFor(e, c) {
+    if (S.busy || NO_DROP_KEYS.has(c.key) || S.cols.indexOf(c) < 0) return null;
+    const row = e.target.closest && e.target.closest('.gdf-row');
+    const it = row && c.byId.get(row.dataset.id);
+    if (it && it.isFolder && !it.isShortcut) return { col: c, item: it, row, key: keyForId(it.id) };
+    return isFolderKey(c.key) ? { col: c, item: null, row: null, key: c.key } : null;
+  }
+
+  function canDropItems(t) {
+    const d = S.drag;
+    if (!d || t.key === d.srcKey || (t.item && d.ids.includes(t.item.id))) return false;
+    // Pasta arrastada que está aberta nas colunas: não pode ir para dentro dela mesma.
+    const keys = new Set(d.ids.map(keyForId));
+    const k = S.cols.findIndex((c) => keys.has(c.key));
+    return k < 0 || S.cols.indexOf(t.col) < k;
+  }
+
+  function setDropTarget(t) {
+    const p = S.dropT;
+    if (p && t && p.col === t.col && p.row === t.row) return;
+    if (p) (p.row || p.col.el).classList.remove('gdf-drop');
+    S.dropT = t;
+    if (t) (t.row || t.col.el).classList.add('gdf-drop');
+    // Mola: parar em cima de uma pasta fechada abre a coluna dela.
+    clearTimeout(S.spring.t);
+    S.spring = { id: null, t: 0 };
+    if (t && t.item) {
+      S.spring = { id: t.item.id, t: setTimeout(guarded('arrastar', () => springOpen(t)), SPRING_MS) };
+    }
+  }
+  const clearDropTarget = () => setDropTarget(null);
+
+  function springOpen(t) {
+    if (S.dropT !== t) return;
+    const ci = S.cols.indexOf(t.col);
+    if (ci < 0) return;
+    const next = S.cols[ci + 1];
+    if (t.col.sel.size === 1 && t.col.sel.has(t.item.id) && next && next.key === t.key) return;
+    t.col.cursor = t.item.id;
+    selectIds(ci, [t.item.id]);
+  }
+
+  function onDragStart(e, c) {
+    const row = e.target.closest && e.target.closest('.gdf-row');
+    if (!row || S.busy || !canDragFrom(c)) {
+      e.preventDefault();
+      return;
+    }
+    const id = row.dataset.id;
+    // Como no Finder: arrastar um item selecionado leva a seleção inteira; um não selecionado vai sozinho.
+    const ids = c.sel.has(id) ? c.items.filter((i) => c.sel.has(i.id)).map((i) => i.id) : [id];
+    const items = ids.map((i) => c.byId.get(i)).filter(Boolean);
+    S.drag = { srcKey: c.key, ids, items };
+    const dt = e.dataTransfer;
+    dt.effectAllowed = 'copyMove';
+    dt.setData(DRAG_TYPE, JSON.stringify(ids));
+    // Soltar em outro app (e-mail, chat, outra aba) entrega o link dos arquivos.
+    dt.setData('text/uri-list', items.map(openUrl).join('\r\n'));
+    dt.setData('text/plain', items.map(openUrl).join('\n'));
+    if (items.length > 1) {
+      const badge = h('div', { class: 'gdf-drag-badge' }, itemIcon(items[0], 18), plural(items.length, '1 item', '# itens'));
+      ui.layer.append(badge);
+      dt.setDragImage(badge, 14, 14);
+      setTimeout(() => badge.remove(), 0);
+    }
+    for (const r of c.list.querySelectorAll('.gdf-row')) if (ids.includes(r.dataset.id)) r.classList.add('gdf-dragging');
+  }
+
+  function onDragEnd() {
+    S.drag = null;
+    clearDropTarget();
+    if (ui.root) for (const r of ui.root.querySelectorAll('.gdf-dragging')) r.classList.remove('gdf-dragging');
+  }
+
+  function onDragOver(e, c) {
+    const kind = dragKind(e.dataTransfer);
+    const t = kind && dropTargetFor(e, c);
+    if (!t || (kind === 'items' && !canDropItems(t))) return clearDropTarget();
+    e.preventDefault();
+    e.dataTransfer.dropEffect = kind === 'items' ? 'move' : 'copy';
+    setDropTarget(t);
+    if (kind === 'files') {
+      prefetchNative(t.key);
+      nativeDragHover(e.dataTransfer, t.key);
+    }
+  }
+
+  function onDrop(e, c) {
+    const kind = dragKind(e.dataTransfer);
+    const t = kind && dropTargetFor(e, c);
+    const drag = S.drag;
+    clearDropTarget();
+    if (!t) return;
+    if (kind === 'items') {
+      if (!canDropItems(t)) return;
+      e.preventDefault();
+      moveItems(drag, t);
+    } else {
+      e.preventDefault();
+      uploadFiles(e.dataTransfer, t);
+    }
+  }
+
+  // ---------------------------------------------------------------- mover (janela "Mover" do Drive)
+
+  const PICKER_SEL = 'iframe[src*="/picker/"]';
+  function pickerFrame() {
+    for (const f of document.querySelectorAll(PICKER_SEL)) {
+      const r = f.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      try {
+        if (f.contentDocument && f.contentDocument.body) return f;
+      } catch {
+        /* outra origem */
+      }
+    }
+    return null;
+  }
+  const pickerOpen = (f) => f.isConnected && f.getBoundingClientRect().width > 0;
+
+  function frameClick(f, el) {
+    const r = el.getBoundingClientRect();
+    const o = {
+      bubbles: true, cancelable: true, composed: true, view: f.contentWindow,
+      clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0,
+    };
+    const p = { ...o, pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    el.dispatchEvent(new PointerEvent('pointerdown', { ...p, buttons: 1 }));
+    el.dispatchEvent(new MouseEvent('mousedown', { ...o, buttons: 1 }));
+    el.dispatchEvent(new PointerEvent('pointerup', p));
+    el.dispatchEvent(new MouseEvent('mouseup', o));
+    el.dispatchEvent(new MouseEvent('click', o));
+  }
+  function frameKey(el, key, code, keyCode) {
+    const init = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true };
+    for (const t of ['keydown', 'keypress', 'keyup']) el.dispatchEvent(new KeyboardEvent(t, init));
+  }
+  function closePicker(f) {
+    if (f && pickerOpen(f)) frameKey(f.contentDocument.activeElement || f.contentDocument.body, 'Escape', 'Escape', 27);
+  }
+
+  // Na janela "Mover" já aberta: acha a pasta pelo id (ou pela busca com o endereço dela) e clica em "Mover".
+  async function pickerMoveTo(f, destId) {
+    // O documento da janela pode ser trocado enquanto ela carrega: sempre lê o atual.
+    const all = (sel) => {
+      const d = f.contentDocument;
+      return d ? [...d.querySelectorAll(sel)] : [];
+    };
+    const visible = (el) => el.getBoundingClientRect().height > 0;
+    const destRow = () => all(`tr[data-target-folder-id="${CSS.escape(destId)}"]`).find(visible);
+    const searchBtn = () => all('button[aria-label="Pesquisar"], button[aria-label="Search"]').find(visible);
+    // Na primeira vez a janela leva alguns segundos para carregar; depois ela é reaproveitada
+    // e, logo ao abrir, ainda tem o conteúdo antigo (invisível).
+    await waitFor(() => all('tr[data-target-folder-id]').some(visible) || searchBtn(), 15000);
+    let row = destRow();
+    if (!row) {
+      const urlInput = () => all('input').find((i) => visible(i) && /url/i.test(`${i.getAttribute('aria-label')} ${i.placeholder}`));
+      let input = urlInput();
+      for (let k = 0; !input && k < 4; k++) {
+        const search = searchBtn();
+        if (search) frameClick(f, search);
+        input = await waitFor(urlInput, 800);
+      }
+      if (!input) throw new Error('a busca da janela Mover não foi encontrada');
+      const url = 'https://drive.google.com/drive/folders/' + destId;
+      input.focus();
+      input.select();
+      if (!input.ownerDocument.execCommand('insertText', false, url) || input.value !== url) {
+        input.value = url;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      frameKey(input, 'Enter', 'Enter', 13);
+      row = await waitFor(destRow, 8000);
+      if (!row) throw new Error('a pasta de destino não apareceu na janela Mover');
+    }
+    // Na primeira abertura a janela aparece antes de o Drive ligar os botões, e o clique se perde:
+    // repete enquanto ela continuar aberta.
+    for (let k = 0; k < 5; k++) {
+      const r = destRow() || row;
+      const btn = r.querySelector('button[aria-label^="Mover para"], button[aria-label^="Move to"]') || r.querySelector('button');
+      if (!btn) throw new Error('o botão Mover da janela não foi encontrado');
+      frameClick(f, btn);
+      if (await waitFor(() => !pickerOpen(f), 1500 + k * 500)) return;
+    }
+    throw new Error('a janela Mover não confirmou');
+  }
+
+  // Indicador discreto no rodapé das colunas, que não bloqueia nada.
+  function busyNote(text) {
+    const el = h('div', { class: 'gdf-busy', role: 'status' }, h('div', { class: 'gdf-spin gdf-spin-sm' }), h('span', null, text));
+    ui.root.append(el);
+    return el;
+  }
+  function paintMoving(ids, on) {
+    for (const id of ids) on ? S.moving.add(id) : S.moving.delete(id);
+    for (const r of ui.root.querySelectorAll('.gdf-row')) r.classList.toggle('gdf-moving', S.moving.has(r.dataset.id));
+  }
+
+  async function moveItems(drag, t) {
+    if (S.busy) return;
+    S.busy = true;
+    ++S.recSeq; // cancela sincronizações pendentes da seleção
+    const what = drag.items.length === 1 ? `“${drag.items[0].name}”` : plural(drag.items.length, '1 item', '# itens');
+    const dest = t.item ? t.item.name : t.col.title;
+    const note = busyNote(`Movendo ${what} para “${dest}”…`);
+    paintMoving(drag.ids, true);
+    // A janela "Mover" do Drive trabalha escondida (e sem bloquear cliques); se algo der errado
+    // ela volta a aparecer, já que o "finally" sempre tira a classe.
+    const html = document.documentElement;
+    html.classList.add('gdf-moving');
+    let f = null;
+    try {
+      if (!(await ensureNative(drag.srcKey))) throw new Error('o Drive não abriu a pasta de origem');
+      // Soltar na coluna "Meu Drive": o id dela vem do breadcrumb da pasta de origem.
+      if (!S.rootId && t.key === '/drive/my-drive') S.rootId = (scrapeCrumbs()[0] || {}).id || null;
+      const destId = t.item ? t.item.id : folderIdOf(t.key);
+      if (!destId) throw new Error('a pasta de destino não foi identificada');
+      await applyNativeSelection(drag.ids);
+      const sel = nativeSelected().map((r) => r.getAttribute('data-id'));
+      if (sel.length !== drag.ids.length || !drag.ids.every((id) => sel.includes(id))) {
+        throw new Error('os itens não foram encontrados na lista do Drive');
+      }
+      dispatchKeyToNative(shortcutInit('m', 'KeyM', 77, DRIVE_MOD));
+      f = await waitFor(pickerFrame, 8000);
+      if (!f) throw new Error('a janela Mover do Drive não abriu');
+      await pickerMoveTo(f, destId);
+      // Espera os itens saírem da lista nativa (é o que confirma que o Drive moveu; a janela também
+      // fecha com Esc) e só então os tira da coluna de origem: enquanto a lista nativa não termina
+      // de carregar, a sincronização mantém os itens que já conhecia.
+      if (!(await waitFor(() => !nativeRows().some((r) => drag.ids.includes(r.getAttribute('data-id'))), 4000))) {
+        throw new Error('o Drive não confirmou a mudança');
+      }
+      const gone = (i) => !drag.ids.includes(i.id);
+      for (const c of S.cols) if (c.key === drag.srcKey && c.items) setItems(c, c.items.filter(gone), c.complete);
+      if (S.cache.has(drag.srcKey)) S.cache.set(drag.srcKey, S.cache.get(drag.srcKey).filter(gone));
+      syncNative();
+      S.cache.delete(t.key);
+      if (S.cols.some((c) => c.key === t.key)) await ensureNative(t.key);
+    } catch (err) {
+      console.warn('[GDrive macOS style] mover:', err);
+      // A janela fica aberta se o problema foi na confirmação (pode haver uma pergunta do Drive nela).
+      if (f && !/confirmou/.test(err.message)) closePicker(f);
+      toast(`Não foi possível mover: ${err.message}. Use “Mover” (⌥⌘M) no menu do Drive.`, 10000);
+    } finally {
+      html.classList.remove('gdf-moving');
+      note.remove(); // no sucesso, o Drive mostra o próprio aviso, com "Desfazer"
+      paintMoving(drag.ids, false);
+      S.busy = false;
+      reconcile();
+      if (S.wantFocus) focusRoot();
+    }
+  }
+
+  // ---------------------------------------------------------------- enviar arquivos do computador
+
+  // Enquanto arquivos passam sobre as colunas, a lista nativa já vai para a pasta de destino:
+  // assim, ao soltar, o próprio evento é repassado (e pastas inteiras também são enviadas).
+  function prefetchNative(key) {
+    if (S.prefetch.key === key) return;
+    clearTimeout(S.prefetch.t);
+    S.prefetch = {
+      key,
+      t: setTimeout(guarded('arrastar', () => {
+        if (S.prefetch.key !== key || curKey() === key) return;
+        ++S.recSeq;
+        ensureNative(key);
+      }), 250),
+    };
+  }
+
+  function nativeDropTarget() {
+    const main = findMain();
+    return nativeGrid(main) || nativeBlankTarget() || (main && main.firstElementChild);
+  }
+  function fireDrag(el, type, dt) {
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new DragEvent(type, {
+      bubbles: true, cancelable: true, composed: true, clientX: r.left + 10, clientY: r.top + 10, dataTransfer: dt,
+    }));
+  }
+  const nativeReadyAt = (key) => curKey() === key && S.nat.key === key && S.nat.settled && !S.nat.failed;
+
+  // A lista nativa precisa receber o arraste como num arraste de verdade: dragenter/dragover enquanto
+  // os arquivos passam e o drop só no fim. Com dragover e drop no mesmo instante, o Drive faz o
+  // upload, mas esconde o painel de progresso do canto inferior direito.
+  function nativeDragHover(dt, key) {
+    const nd = S.natDrop;
+    if (nd && nd.key === key && nd.el.isConnected) return;
+    nativeDragLeave();
+    if (!nativeReadyAt(key)) return;
+    const el = nativeDropTarget();
+    if (!el) return;
+    fireDrag(el, 'dragenter', dt);
+    fireDrag(el, 'dragover', dt);
+    S.natDrop = { key, el, dt };
+  }
+  function nativeDragLeave() {
+    const nd = S.natDrop;
+    S.natDrop = null;
+    if (nd && nd.el.isConnected) fireDrag(nd.el, 'dragleave', nd.dt);
+  }
+
+  function uploadFiles(dt, t) {
+    S.prefetch = { key: null, t: 0 };
+    const nd = S.natDrop;
+    S.natDrop = null;
+    // A lista nativa já recebeu o dragenter/dragover enquanto os arquivos passavam: repassa só o
+    // próprio "drop" (que preserva pastas arrastadas, cujo conteúdo só existe durante o evento).
+    if (nd && nd.key === t.key && nd.el.isConnected && nativeReadyAt(t.key)) {
+      fireDrag(nd.el, 'drop', dt);
+      return;
+    }
+    if (nd && nd.el.isConnected) fireDrag(nd.el, 'dragleave', nd.dt);
+    // Senão, guarda os arquivos e envia quando a pasta estiver aberta por baixo.
+    const files = [];
+    let folders = 0;
+    for (const item of dt.items) {
+      if (item.kind !== 'file') continue;
+      const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+      if (entry && entry.isDirectory) folders++;
+      else {
+        const file = item.getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (folders) {
+      // Pasta já aberta por baixo, só sem o dragenter: envia tudo agora, num evento só
+      // (o upload funciona, mas o Drive não mostra o painel de progresso).
+      if (nativeReadyAt(t.key)) {
+        const el = nativeDropTarget();
+        if (el) for (const type of ['dragenter', 'dragover', 'drop']) fireDrag(el, type, dt);
+        return;
+      }
+      toast(`${plural(folders, '1 pasta não foi enviada', '# pastas não foram enviadas')}: solte de novo depois que a coluna terminar de carregar.`, 10000);
+    }
+    if (!files.length) return;
+    const my = ++S.recSeq;
+    (async () => {
+      if (!(await ensureNative(t.key, () => my !== S.recSeq)) || !nativeReadyAt(t.key)) {
+        toast('Não foi possível enviar: o Drive não abriu a pasta de destino.');
+        return;
+      }
+      const copy = new DataTransfer();
+      for (const file of files) copy.items.add(file);
+      const el = nativeDropTarget();
+      if (!el) return toast('Não foi possível enviar: a lista do Drive não foi encontrada.');
+      // Intervalo entre dragover e drop, como num arraste de verdade (senão o painel de upload some).
+      fireDrag(el, 'dragenter', copy);
+      fireDrag(el, 'dragover', copy);
+      await sleep(150);
+      fireDrag(el, 'drop', copy);
+    })().catch((e) => reportError(e, 'enviar'));
+  }
+
   // ================================================================ UI
 
   function buildUi() {
@@ -877,6 +1272,31 @@
       S.wantFocus = true;
       if (!isEditable(e.target) && !e.target.closest('.gdf-resize')) setTimeout(focusRoot, 0);
     });
+    // Arrastes sobre as colunas não chegam ao Drive. Onde nenhuma coluna aceitou (ex.: pré-visualização),
+    // o "drop" é recusado, para o navegador não abrir o arquivo solto no lugar do Drive.
+    for (const t of ['dragenter', 'dragover', 'drop']) {
+      ui.root.addEventListener(t, (e) => {
+        e.stopPropagation();
+        if (e.defaultPrevented) return;
+        e.preventDefault();
+        if (t === 'drop') {
+          clearDropTarget();
+          nativeDragLeave();
+        } else {
+          e.dataTransfer.dropEffect = 'none';
+          if (t === 'dragover') clearDropTarget();
+        }
+      });
+    }
+    ui.root.addEventListener('dragleave', (e) => {
+      e.stopPropagation();
+      if (!ui.root.contains(e.relatedTarget)) {
+        clearDropTarget();
+        nativeDragLeave();
+      }
+    });
+    // O Drive cancela todo dragstart que chega ao documento (o arraste dele é próprio).
+    for (const t of ['dragstart', 'drag', 'dragend']) ui.root.addEventListener(t, (e) => e.stopPropagation());
   }
   function focusRoot() {
     if (ui.root && ui.root.isConnected) ui.root.focus({ preventScroll: true });
@@ -925,10 +1345,11 @@
 
   function rowEl(it) {
     return h('div', {
-      class: 'gdf-row' + (it.isFolder ? ' is-folder' : ''),
+      class: 'gdf-row' + (it.isFolder ? ' is-folder' : '') + (S.moving.has(it.id) ? ' gdf-moving' : ''),
       'data-id': it.id,
       role: 'option',
       title: it.name,
+      draggable: 'true',
     },
     itemIcon(it, 20),
     h('span', { class: 'gdf-name' }, it.name),
@@ -1078,6 +1499,12 @@
         nativeContextMenu(null, x, y);
       }
     });
+
+    list.addEventListener('dragstart', guarded('arrastar', (e) => onDragStart(e, c)));
+    list.addEventListener('dragend', guarded('arrastar', onDragEnd));
+    list.addEventListener('dragenter', guarded('arrastar', (e) => onDragOver(e, c)));
+    list.addEventListener('dragover', guarded('arrastar', (e) => onDragOver(e, c)));
+    list.addEventListener('drop', guarded('soltar', (e) => onDrop(e, c)));
 
     grip.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -1424,6 +1851,7 @@
     ui.layer.append(el);
     toastEl = el;
     setTimeout(() => el.remove(), ms);
+    return el;
   }
 
   // ================================================================ proteção contra mudanças do Drive

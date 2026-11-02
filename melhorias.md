@@ -13,8 +13,17 @@ A extensão depende do HTML interno do Drive, que o Google muda sem aviso.
 
 ## 2. Arrastar e soltar de volta
 
-- [ ] **Mover entre colunas:** soltar um item numa pasta viraria "recortar (⌘X) → abrir pasta de destino → colar (⌘V)" na lista nativa. Antes, testar se o Drive tem recortar/colar, usando um arquivo descartável.
-- [ ] **Enviar arquivos arrastados do computador:** soltar arquivos numa coluna e repassar para a lista nativa daquela pasta.
+- [x] **Mover entre colunas:** soltar um item numa pasta viraria "recortar (⌘X) → abrir pasta de destino → colar (⌘V)" na lista nativa. Antes, testar se o Drive tem recortar/colar, usando um arquivo descartável.
+
+  Feito, por outro caminho. Testado com arquivos descartáveis: o Drive **não tem recortar** (⌘C → ⌘V só faz uma cópia).
+  O arraste da lista nativa só move para pastas visíveis na mesma lista, e em outra pasta ele cria um **atalho** em vez de mover.
+  A extensão usa a janela **Mover** (⌥⌘M): cola o endereço da pasta de destino na busca da janela e clica em "Mover".
+  Funciona para qualquer pasta das colunas, com seleção múltipla, "mola" (parar em cima abre a pasta) e o "Desfazer" do Drive.
+- [x] **Enviar arquivos arrastados do computador:** soltar arquivos numa coluna e repassar para a lista nativa daquela pasta.
+
+  Feito: a lista nativa abre a pasta de destino enquanto os arquivos passam por cima, e o "drop" é repassado a ela.
+  Testado com arquivos criados por script (coluna, pasta de outra coluna e soltura imediata).
+  **Falta testar arrastando do Finder de verdade**, principalmente uma pasta inteira.
 
 ## 3. Mais velocidade
 
@@ -43,6 +52,9 @@ A extensão depende do HTML interno do Drive, que o Google muda sem aviso.
 
   Feito: em Computadores as colunas leem os cards `div[role="gridcell"][data-id]`; cada computador abre como pasta. Abrindo uma pasta de computador pela URL, o caminho começa na coluna "Computadores" (breadcrumb com `data-view="…computers…"`). Testado: lista, abrir o computador, menu de contexto e caminho completo de `Documents`.
 - [ ] Teclas que alteram arquivos: Delete/⌘⌫ (lixeira), ⌘C/⌘X/⌘V. Testar com arquivos descartáveis.
+  (O menu do Drive mostra "Fazer uma cópia: ⌘C, depois ⌘V" e não tem recortar; no teste com teclas simuladas, ⌘X → ⌘V não moveu nada.)
+- [ ] **Caminho ao abrir pela URL:** ao carregar a página direto numa subpasta, às vezes só aparece a coluna da pasta,
+  sem as ancestrais. Ligar e desligar as colunas monta o caminho. Visto em 02/11/2026 durante os testes do item 2.
 
 ## 6. Distribuição
 
