@@ -19,7 +19,7 @@
   const DEFAULT_COL_W = 260;
   const MIN_COL_W = 160;
   const MAX_COL_W = 640;
-  const FOLDER_RE = /^(pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada)\b/i;
+  const FOLDER_RE = /^(pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada|computador|computer|ordenador|ordinateur)\b/i;
   const SHORTCUT_RE = /\b(atalho|shortcut|acceso directo|raccourci|verknüpfung|scorciatoia)\b/i;
   const SHARED_RE = /\s+(compartilhad[oa]|shared|compartido|partagé|freigegeben|condiviso)$/i;
   const SUPPORTED_RE = /^\/drive\/(my-drive|folders\/[\w-]+|shared-with-me|recent|starred|trash|shared-drives|computers|search)\b/;
@@ -126,6 +126,11 @@
   }
   const isSupported = (key) => !!key && SUPPORTED_RE.test(key);
   const isFolderKey = (key) => /^\/drive\/(my-drive|folders\/)/.test(key || '');
+  // Em Computadores o Drive não usa a tabela: cada computador é um card (div[role=gridcell]).
+  const COMPUTERS_KEY = '/drive/computers';
+  const ROW_SEL = 'tr[role="row"][data-id]';
+  const CARD_SEL = 'div[role="gridcell"][data-id]';
+  const itemSel = () => (curKey() === COMPUTERS_KEY ? CARD_SEL : ROW_SEL);
   const keyForId = (id) => '/drive/folders/' + id;
   function authuser() {
     const m = location.pathname.match(/^\/drive\/u\/(\d+)/);
@@ -167,12 +172,13 @@
     return main ? main.querySelector('[role="grid"]') : null;
   }
   function nativeRows(grid = nativeGrid()) {
-    return grid ? [...grid.querySelectorAll('tr[role="row"][data-id]')] : [];
+    return grid ? [...grid.querySelectorAll(itemSel())] : [];
   }
   function rowById(id) {
     const g = nativeGrid();
-    return g ? g.querySelector(`tr[role="row"][data-id="${CSS.escape(id)}"]`) : null;
+    return g ? g.querySelector(`${itemSel()}[data-id="${CSS.escape(id)}"]`) : null;
   }
+  const isCard = (el) => el.tagName !== 'TR';
   function nativeSig(rows = nativeRows()) {
     return rows.map((r) => r.getAttribute('data-id')).join(',');
   }
@@ -200,7 +206,7 @@
     return '';
   }
   function cloneIcon(tr) {
-    const cell = tr.querySelector('td');
+    const cell = isCard(tr) ? tr : tr.querySelector('td');
     const src = cell && (cell.querySelector('svg') || cell.querySelector('img'));
     if (!src) return null;
     const node = src.cloneNode(true);
@@ -216,8 +222,9 @@
     const known = new Map((prev || []).map((i) => [i.id, i]));
     return rows.map((tr) => {
       const id = tr.getAttribute('data-id');
-      const name = (tr.querySelector('strong') || {}).textContent || '';
-      const label = (tr.querySelector('td [aria-label]') || { getAttribute: () => '' }).getAttribute('aria-label') || '';
+      const card = isCard(tr);
+      const name = card ? firstText(tr) : (tr.querySelector('strong') || {}).textContent || '';
+      const label = card ? cardLabel(tr, name) : (tr.querySelector('td [aria-label]') || { getAttribute: () => '' }).getAttribute('aria-label') || '';
       const rawType = label.startsWith(name) ? label.slice(name.length).trim() : label;
       const old = known.get(id);
       if (old && old.name === name && old.rawType === rawType) {
@@ -232,12 +239,18 @@
         rawType,
         type,
         shared,
-        isFolder: FOLDER_RE.test(type) || (SHORTCUT_RE.test(type) && /(pasta|folder)/i.test(type)),
+        // Em Computadores todo card é um computador, que abre como pasta.
+        isFolder: card || FOLDER_RE.test(type) || (SHORTCUT_RE.test(type) && /(pasta|folder)/i.test(type)),
         isShortcut: SHORTCUT_RE.test(type),
         icon: cloneIcon(tr),
         info: rowInfo(tr, heads),
       };
     });
+  }
+  // Rótulo "Nome Tipo" do card (a dica do nome; o aria-label do card traz texto extra no fim).
+  function cardLabel(el, name) {
+    const tip = [...el.querySelectorAll('[data-tooltip]')].map((e) => e.getAttribute('data-tooltip')).find((t) => name && t.startsWith(name));
+    return tip || el.getAttribute('aria-label') || '';
   }
   function rowInfo(tr, heads) {
     const cells = [...tr.children];
@@ -255,14 +268,20 @@
     const main = findMain();
     if (!main) return [];
     const mr = main.getBoundingClientRect();
-    return [...document.querySelectorAll('[role="link"][data-id]')]
+    // Pastas de um computador começam em "Computadores", que não tem data-id (só data-view="…computers…").
+    const crumbs = [...document.querySelectorAll('[role="link"][data-id], [role="link"][data-view*="computers"]')]
       .filter((e) => {
         if (main.contains(e) || (ui.root && ui.root.contains(e))) return false;
         const b = e.getBoundingClientRect();
         return b.height > 0 && b.left >= mr.left - 4 && b.bottom <= mr.top + 2;
       })
       .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
-      .map((e) => ({ id: e.getAttribute('data-id'), name: e.textContent.trim() }));
+      .map((e) => {
+        const id = e.getAttribute('data-id');
+        return { id, key: id ? keyForId(id) : COMPUTERS_KEY, name: e.textContent.trim() };
+      });
+    // "Computadores" só faz sentido como raiz do caminho.
+    return crumbs.filter((c, i) => c.id || i === 0);
   }
 
   // ================================================================ sincronização com a lista nativa
@@ -445,7 +464,8 @@
   function nativeClick(tr, mods = {}) {
     const t = rowTarget(tr);
     const r = tr.getBoundingClientRect();
-    const pos = { clientX: r.left + Math.min(200, r.width / 2), clientY: r.top + r.height / 2, ...mods };
+    // No card, clica perto do ícone (à direita fica o botão "Mais ações").
+    const pos = { clientX: r.left + Math.min(isCard(tr) ? 40 : 200, r.width / 2), clientY: r.top + r.height / 2, ...mods };
     fire(t, 'mousedown', pos);
     fire(t, 'mouseup', pos);
     fire(t, 'click', pos);
@@ -673,7 +693,7 @@
     if (!crumbs.length || stale() || S.userTouched) return;
     const ids = [...crumbs.map((c) => c.id), key.split('/').pop()];
     const anc = crumbs.map((cr, i) => {
-      const c = makeCol(keyForId(cr.id), cr.name, { chain: true });
+      const c = makeCol(cr.key, cr.name, { chain: true });
       c.sel.add(ids[i + 1]);
       c.cursor = c.anchor = ids[i + 1];
       if (!c.items) c.lazy = true;

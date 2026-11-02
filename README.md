@@ -37,7 +37,7 @@ Abra o Drive e clique no botão **Colunas** ao lado de Lista/Grade.
 
 | Peça | Detalhe |
 |---|---|
-| Dados | linhas `tr[role=row][data-id]` da lista nativa; tipo vem do `aria-label`, ícones são clonados |
+| Dados | linhas `tr[role=row][data-id]` da lista nativa; tipo vem do `aria-label`, ícones são clonados. Em Computadores, cards `div[role=gridcell][data-id]` |
 | Navegação | `history.replaceState` + `popstate` faz o Drive abrir a pasta sem recarregar |
 | Ações | cliques, menu de contexto e teclas são disparados na linha nativa correspondente |
 | Camadas | colunas em `z-index: 5` — acima da lista (contexto 0), abaixo dos menus do Drive (8) |
@@ -72,3 +72,4 @@ Para automatizar: dispare `document.dispatchEvent(new Event('gdf-selftest'))` na
 - Cada coluna nova leva o tempo do Drive abrir a pasta (~0,5 s).
 - Arrastar itens entre colunas não está disponível — use Mover (⌥⌘M) ou o menu.
 - A seção "Pessoal/Início" continua na visualização nativa.
+- Em Computadores o Drive não mostra os botões Lista/Grade, então o botão Colunas também não aparece lá: as colunas seguem ligadas ou desligadas conforme o resto do Drive.

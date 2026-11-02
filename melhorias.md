@@ -39,7 +39,9 @@ A extensão depende do HTML interno do Drive, que o Google muda sem aviso.
 - [ ] Pasta vazia
 - [ ] Drive em inglês
 - [ ] Segunda conta logada (endereço `/u/1/`)
-- [ ] **Computadores aparece vazio nas colunas:** nessa seção o Drive não usa as linhas `tr[role="row"][data-id]` nem tem os botões Lista/Grade, então as colunas não acham nenhum item. Ver como o Drive monta essa lista e ler os itens dali (ou deixar Computadores na visualização nativa).
+- [x] **Computadores aparece vazio nas colunas:** nessa seção o Drive não usa as linhas `tr[role="row"][data-id]` nem tem os botões Lista/Grade, então as colunas não acham nenhum item. Ver como o Drive monta essa lista e ler os itens dali (ou deixar Computadores na visualização nativa).
+
+  Feito: em Computadores as colunas leem os cards `div[role="gridcell"][data-id]`; cada computador abre como pasta. Abrindo uma pasta de computador pela URL, o caminho começa na coluna "Computadores" (breadcrumb com `data-view="…computers…"`). Testado: lista, abrir o computador, menu de contexto e caminho completo de `Documents`.
 - [ ] Teclas que alteram arquivos: Delete/⌘⌫ (lixeira), ⌘C/⌘X/⌘V. Testar com arquivos descartáveis.
 
 ## 6. Distribuição
