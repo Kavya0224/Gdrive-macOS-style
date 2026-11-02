@@ -1,0 +1,1437 @@
+// Drive Finder — content script
+// Visualização em colunas (estilo Finder) para o Google Drive, sem API e sem credenciais:
+// lê os itens da própria lista do Drive e repassa seleção, menus e atalhos para a lista nativa,
+// que continua existindo (escondida) embaixo das colunas.
+(() => {
+  'use strict';
+  if (window.top !== window || window.__gdfLoaded) return;
+  window.__gdfLoaded = true;
+
+  // Permite testar fora da extensão com um armazenamento simulado.
+  const EXT = globalThis.__GDF_EXT__ || (typeof chrome !== 'undefined' ? chrome : null);
+  const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
+
+  // ================================================================ constantes
+
+  const DEFAULT_COL_W = 260;
+  const MIN_COL_W = 160;
+  const MAX_COL_W = 640;
+  const FOLDER_RE = /^(pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada)\b/i;
+  const SHORTCUT_RE = /\b(atalho|shortcut|acceso directo|raccourci|verknüpfung|scorciatoia)\b/i;
+  const SHARED_RE = /\s+(compartilhad[oa]|shared|compartido|partagé|freigegeben|condiviso)$/i;
+  const SUPPORTED_RE = /^\/drive\/(my-drive|folders\/[\w-]+|shared-with-me|recent|starred|trash|shared-drives|computers|search)\b/;
+
+  const ICONS = {
+    chevron: 'M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z',
+    file: 'M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z',
+    folder: 'M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
+    open: 'M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z',
+    eye: 'M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z',
+    more: 'M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z',
+  };
+
+  // ================================================================ estado
+
+  const S = {
+    enabled: false,
+    key: null, // chave da rota atual (/drive/...)
+    needsBuild: true,
+    lastHref: '',
+    expectKey: null, // navegação iniciada pela extensão
+    cols: [],
+    active: 0,
+    preview: null, // item | { multi: item[] }
+    buildSeq: 0,
+    recSeq: 0,
+    userTouched: false,
+    colW: DEFAULT_COL_W,
+    cache: new Map(), // chave da pasta -> itens
+    typeBuf: '',
+    typeT: 0,
+    wantFocus: false,
+    dark: false,
+    bg: '',
+    toggleCls: null,
+    ignoreNativeClick: false,
+    nat: { key: null, settled: false, prevSig: '', since: 0, emptySince: 0, complete: false, stall: 0, lastCount: -1, nextMoreAt: 0 },
+    lastSig: '',
+    nativeDirty: true,
+    mainObs: null,
+    observedMain: null,
+  };
+  const ui = { root: null, strip: null, layer: null, preview: null, previewKey: '' };
+
+  // ================================================================ utilidades
+
+  const NS = 'http://www.w3.org/2000/svg';
+  function icon(name, size = 20) {
+    const s = document.createElementNS(NS, 'svg');
+    s.setAttribute('viewBox', '0 0 24 24');
+    s.setAttribute('width', size);
+    s.setAttribute('height', size);
+    s.setAttribute('aria-hidden', 'true');
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('d', ICONS[name]);
+    p.setAttribute('fill', 'currentColor');
+    s.append(p);
+    return s;
+  }
+  function columnsIcon() {
+    const s = document.createElementNS(NS, 'svg');
+    s.setAttribute('viewBox', '0 0 14 12');
+    s.setAttribute('width', '14');
+    s.setAttribute('height', '12');
+    s.setAttribute('fill', 'none');
+    const p = document.createElementNS(NS, 'path');
+    p.setAttribute('fill', 'currentColor');
+    p.setAttribute('fill-rule', 'evenodd');
+    p.setAttribute('d', 'M1.5 0h11A1.5 1.5 0 0 1 14 1.5v9a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 0 10.5v-9A1.5 1.5 0 0 1 1.5 0zM1.5 1.5v9h3v-9zM5.5 1.5v9h3v-9zM9.5 1.5v9h3v-9z');
+    s.append(p);
+    return s;
+  }
+  function h(tag, props, ...kids) {
+    const el = document.createElement(tag);
+    if (props) {
+      for (const [k, v] of Object.entries(props)) {
+        if (v == null || v === false) continue;
+        if (k === 'class') el.className = v;
+        else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+        else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+        else el.setAttribute(k, v === true ? '' : v);
+      }
+    }
+    for (const k of kids.flat(Infinity)) {
+      if (k == null || k === false) continue;
+      el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+    }
+    return el;
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const norm = (s) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const isEditable = (t) => !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+  const plural = (n, one, many) => (n === 1 ? one : many.replace('#', n));
+
+  // ================================================================ rotas
+
+  function curKey() {
+    const p = location.pathname.replace(/^\/drive\/u\/\d+/, '/drive').replace(/\/+$/, '');
+    const m = p.match(/^\/drive\/folders\/([\w-]+)/);
+    if (m) return '/drive/folders/' + m[1];
+    if (p.startsWith('/drive/search')) return p + location.search;
+    return p;
+  }
+  const isSupported = (key) => !!key && SUPPORTED_RE.test(key);
+  const isFolderKey = (key) => /^\/drive\/(my-drive|folders\/)/.test(key || '');
+  const keyForId = (id) => '/drive/folders/' + id;
+  function authuser() {
+    const m = location.pathname.match(/^\/drive\/u\/(\d+)/);
+    return m ? m[1] : '0';
+  }
+  function fullPath(key) {
+    const prefix = (location.pathname.match(/^\/drive\/u\/\d+/) || ['/drive'])[0];
+    return prefix + key.slice('/drive'.length);
+  }
+  // Navega o Drive (SPA) sem recarregar e sem poluir o histórico.
+  function navigateDrive(key) {
+    if (curKey() === key) return;
+    S.lastSig = nativeSig();
+    S.expectKey = key;
+    history.replaceState(history.state, '', fullPath(key));
+    window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+    natCheckKey();
+  }
+  function pageTitle() {
+    return (document.title || '').replace(/\s+-\s+Google Drive\s*$/, '').trim();
+  }
+
+  // ================================================================ leitura da lista nativa
+
+  function findMain() {
+    let best = null;
+    let area = 0;
+    for (const m of document.querySelectorAll('div[role="main"]')) {
+      const r = m.getBoundingClientRect();
+      const a = r.width * r.height;
+      if (r.width > 200 && r.height > 100 && a > area) {
+        best = m;
+        area = a;
+      }
+    }
+    return best;
+  }
+  function nativeGrid(main = findMain()) {
+    return main ? main.querySelector('[role="grid"]') : null;
+  }
+  function nativeRows(grid = nativeGrid()) {
+    return grid ? [...grid.querySelectorAll('tr[role="row"][data-id]')] : [];
+  }
+  function rowById(id) {
+    const g = nativeGrid();
+    return g ? g.querySelector(`tr[role="row"][data-id="${CSS.escape(id)}"]`) : null;
+  }
+  function nativeSig(rows = nativeRows()) {
+    return rows.map((r) => r.getAttribute('data-id')).join(',');
+  }
+  function nativeHeads(grid) {
+    // A primeira linha sem data-id com várias células é o cabeçalho (em "Recentes" há linhas de seção).
+    const hr = grid && [...grid.querySelectorAll('tr:not([data-id])')].find((r) => r.children.length >= 3);
+    return hr ? [...hr.children].map((c) => c.textContent.trim()) : [];
+  }
+  function nativeScroller(grid) {
+    let e = grid;
+    while (e && e !== document.body) {
+      if (e.scrollHeight > e.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(e).overflowY)) return e;
+      e = e.parentElement;
+    }
+    return null;
+  }
+  function firstText(el) {
+    if (!el) return '';
+    const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = w.nextNode())) {
+      const t = n.nodeValue.trim();
+      if (t) return t;
+    }
+    return '';
+  }
+  function cloneIcon(tr) {
+    const cell = tr.querySelector('td');
+    const src = cell && (cell.querySelector('svg') || cell.querySelector('img'));
+    if (!src) return null;
+    const node = src.cloneNode(true);
+    node.removeAttribute('width');
+    node.removeAttribute('height');
+    node.style.color = getComputedStyle(src).color;
+    node.setAttribute('aria-hidden', 'true');
+    return node;
+  }
+
+  // Lê as linhas nativas. Reaproveita objetos já conhecidos para não clonar ícones toda vez.
+  function scrapeItems(rows, heads, prev) {
+    const known = new Map((prev || []).map((i) => [i.id, i]));
+    return rows.map((tr) => {
+      const id = tr.getAttribute('data-id');
+      const name = (tr.querySelector('strong') || {}).textContent || '';
+      const label = (tr.querySelector('td [aria-label]') || { getAttribute: () => '' }).getAttribute('aria-label') || '';
+      const rawType = label.startsWith(name) ? label.slice(name.length).trim() : label;
+      const old = known.get(id);
+      if (old && old.name === name && old.rawType === rawType) {
+        old.info = rowInfo(tr, heads) || old.info;
+        return old;
+      }
+      const shared = SHARED_RE.test(rawType);
+      const type = rawType.replace(SHARED_RE, '').trim();
+      return {
+        id,
+        name,
+        rawType,
+        type,
+        shared,
+        isFolder: FOLDER_RE.test(type) || (SHORTCUT_RE.test(type) && /(pasta|folder)/i.test(type)),
+        isShortcut: SHORTCUT_RE.test(type),
+        icon: cloneIcon(tr),
+        info: rowInfo(tr, heads),
+      };
+    });
+  }
+  function rowInfo(tr, heads) {
+    const cells = [...tr.children];
+    const out = [];
+    for (let k = 1; k < cells.length && k < heads.length; k++) {
+      const head = heads[k];
+      if (!head || /orden|sort|classif/i.test(head)) continue;
+      const v = firstText(cells[k]);
+      if (v) out.push([head, v]);
+    }
+    return out;
+  }
+
+  function scrapeCrumbs() {
+    const main = findMain();
+    if (!main) return [];
+    const mr = main.getBoundingClientRect();
+    return [...document.querySelectorAll('[role="link"][data-id]')]
+      .filter((e) => {
+        if (main.contains(e) || (ui.root && ui.root.contains(e))) return false;
+        const b = e.getBoundingClientRect();
+        return b.height > 0 && b.left >= mr.left - 4 && b.bottom <= mr.top + 2;
+      })
+      .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+      .map((e) => ({ id: e.getAttribute('data-id'), name: e.textContent.trim() }));
+  }
+
+  // ================================================================ sincronização com a lista nativa
+
+  function natCheckKey() {
+    const k = curKey();
+    if (k === S.nat.key) return;
+    S.nat = {
+      key: k, settled: false, prevSig: S.lastSig, since: Date.now(), emptySince: 0,
+      complete: false, stall: 0, lastCount: -1, nextMoreAt: 0, failed: false,
+    };
+    S.nativeDirty = true;
+  }
+
+  function observeMain(main) {
+    if (S.observedMain === main) return;
+    if (S.mainObs) S.mainObs.disconnect();
+    S.observedMain = main;
+    if (!main) return;
+    S.mainObs = new MutationObserver(() => {
+      S.nativeDirty = true;
+      scheduleSync();
+    });
+    S.mainObs.observe(main, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-label', 'data-id'] });
+  }
+  let syncT = 0;
+  function scheduleSync() {
+    if (syncT) return;
+    syncT = setTimeout(() => {
+      syncT = 0;
+      syncNative();
+    }, 80);
+  }
+
+  function syncNative() {
+    natCheckKey();
+    const N = S.nat;
+    const now = Date.now();
+    const main = findMain();
+    observeMain(main);
+    const grid = nativeGrid(main);
+    const rows = nativeRows(grid);
+    const sig = nativeSig(rows);
+
+    if (!N.settled) {
+      if (sig && sig !== N.prevSig) {
+        N.settled = true;
+      } else if (!sig) {
+        // Durante o carregamento a área fica vazia; pasta vazia mostra ilustração/texto.
+        const hasContent = main && (main.innerText.trim() || main.querySelector('img, svg'));
+        if (hasContent) {
+          N.emptySince = N.emptySince || now;
+          if (now - N.emptySince > 400) N.settled = true;
+        } else N.emptySince = 0;
+      }
+      if (!N.settled && now - N.since > 10000) {
+        N.settled = true;
+        N.failed = !!sig && sig === N.prevSig;
+      }
+      if (N.settled) S.nativeDirty = true;
+    }
+    S.lastSig = sig;
+    if (!N.settled || !isShowing()) return;
+
+    ensureListLayout(main, grid);
+    if (N.failed) {
+      const col = S.cols.find((c) => c.key === N.key);
+      if (col && !col.items) {
+        col.error = true;
+        fillCol(col);
+      }
+      return;
+    }
+    if (S.nativeDirty) {
+      S.nativeDirty = false;
+      const col = S.cols.find((c) => c.key === N.key);
+      const prev = col ? col.items : S.cache.get(N.key);
+      let items = scrapeItems(rows, nativeHeads(grid), prev);
+      if (!N.complete && prev && prev.length > items.length) {
+        // Enquanto a lista nativa não terminou de paginar, mantém os itens já conhecidos.
+        const seen = new Set(items.map((i) => i.id));
+        items = items.concat(prev.filter((i) => !seen.has(i.id)));
+      }
+      S.cache.set(N.key, items);
+      if (col) setItems(col, items, N.complete);
+    }
+    loadMore(grid, rows.length, now);
+  }
+
+  // Rola a lista nativa (escondida) para o Drive carregar as próximas páginas.
+  function loadMore(grid, count, now) {
+    const N = S.nat;
+    if (N.complete || now < N.nextMoreAt) return;
+    N.nextMoreAt = now + 900;
+    if (count === N.lastCount) N.stall++;
+    else N.stall = 0;
+    N.lastCount = count;
+    const sc = grid && nativeScroller(grid);
+    if (!sc || N.stall >= 2) {
+      N.complete = true;
+      S.nativeDirty = true;
+      const col = S.cols.find((c) => c.key === N.key);
+      if (col) col.complete = true;
+      scheduleSync();
+      return;
+    }
+    sc.scrollTop = sc.scrollHeight;
+  }
+
+  async function waitSettled(key, isStale) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < 12000) {
+      if (isStale && isStale()) return false;
+      syncNative();
+      if (S.nat.key === key && S.nat.settled) return !S.nat.failed;
+      if (S.nat.key !== key && S.nat.settled && Date.now() - t0 > 1500 && S.expectKey !== key) return false;
+      await sleep(60);
+    }
+    return false;
+  }
+
+  async function ensureNative(key, isStale) {
+    if (curKey() !== key) navigateDrive(key);
+    return waitSettled(key, isStale);
+  }
+
+  async function waitFor(fn, ms = 3000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < ms) {
+      const v = fn();
+      if (v) return v;
+      await sleep(40);
+    }
+    return null;
+  }
+
+  function ensureListLayout(main, grid) {
+    if (!main || S.ignoreNativeClick || nativeRows(grid).length) return;
+    if (!main.querySelector('[data-id]')) return;
+    const list = document.querySelector('button[data-test-id="list-layout-button"]');
+    if (!list) return;
+    // Está no layout de grade: as colunas precisam do layout de lista por baixo.
+    S.ignoreNativeClick = true;
+    fire(list, 'mousedown');
+    fire(list, 'mouseup');
+    fire(list, 'click');
+    S.ignoreNativeClick = false;
+    const group = list.parentElement;
+    for (const n of group.querySelectorAll(':scope > button[role="radio"]:not(.gdf-toggle)')) {
+      n.dataset.gdfSaved = n === list ? 'true' : 'false';
+    }
+  }
+
+  // ---------------------------------------------------------------- ações na lista nativa
+
+  function fire(el, type, extra = {}) {
+    const r = el.getBoundingClientRect();
+    const opts = {
+      bubbles: true, cancelable: true, view: window, composed: true,
+      clientX: extra.clientX ?? r.left + Math.min(160, r.width / 2),
+      clientY: extra.clientY ?? r.top + r.height / 2,
+      button: extra.button || 0,
+      buttons: extra.button === 2 ? 2 : 1,
+      metaKey: !!extra.metaKey, ctrlKey: !!extra.ctrlKey, shiftKey: !!extra.shiftKey, altKey: !!extra.altKey,
+      detail: extra.detail || 1,
+    };
+    S.firing = true;
+    try {
+      el.dispatchEvent(new MouseEvent(type, opts));
+    } finally {
+      S.firing = false;
+    }
+  }
+  const rowTarget = (tr) => tr.querySelector('strong') || tr;
+  const TOGGLE_MOD = IS_MAC ? { metaKey: true } : { ctrlKey: true };
+
+  function nativeClick(tr, mods = {}) {
+    const t = rowTarget(tr);
+    const r = tr.getBoundingClientRect();
+    const pos = { clientX: r.left + Math.min(200, r.width / 2), clientY: r.top + r.height / 2, ...mods };
+    fire(t, 'mousedown', pos);
+    fire(t, 'mouseup', pos);
+    fire(t, 'click', pos);
+  }
+
+  function nativeSelected() {
+    return nativeRows().filter((r) => r.getAttribute('aria-selected') === 'true');
+  }
+
+  async function applyNativeSelection(ids) {
+    const want = new Set(ids);
+    const cur = nativeSelected();
+    if (cur.length === want.size && cur.every((r) => want.has(r.getAttribute('data-id')))) return true;
+    if (!ids.length) {
+      for (const r of cur) nativeClick(r, TOGGLE_MOD);
+      return true;
+    }
+    const first = rowById(ids[0]);
+    if (!first) return false;
+    nativeClick(first);
+    for (const id of ids.slice(1)) {
+      const r = rowById(id);
+      if (r) nativeClick(r, TOGGLE_MOD);
+    }
+    await sleep(30);
+    return true;
+  }
+
+  // Leva a lista nativa para a pasta da coluna ativa e seleciona lá os mesmos itens.
+  async function prepareNative() {
+    const my = ++S.recSeq;
+    const c = S.cols[S.active];
+    if (!c) return false;
+    const ok = await ensureNative(c.key, () => my !== S.recSeq);
+    if (!ok || my !== S.recSeq) return false;
+    await applyNativeSelection([...c.sel]);
+    return my === S.recSeq;
+  }
+
+  // Reflete a seleção das colunas na lista nativa (com pequeno atraso para não "brigar" com as setas).
+  function reconcile() {
+    const my = ++S.recSeq;
+    setTimeout(async () => {
+      if (my !== S.recSeq || !isShowing()) return;
+      const stale = () => my !== S.recSeq;
+      const c = S.cols[S.active];
+      if (!c) return;
+      const sel = selItems(c);
+      const next = S.cols[S.active + 1];
+      if (sel.length === 1 && sel[0].isFolder && next) {
+        if (next.pendingShortcut) return openShortcutColumn(c, sel[0], next, stale);
+        await ensureNative(next.key, stale);
+      } else {
+        if (!(await ensureNative(c.key, stale)) || stale()) return;
+        await applyNativeSelection(sel.map((i) => i.id));
+      }
+    }, 140);
+  }
+
+  // Atalho para pasta: o destino só é conhecido abrindo pelo próprio Drive.
+  async function openShortcutColumn(c, item, next, stale) {
+    if (!(await ensureNative(c.key, stale)) || stale()) return;
+    const tr = rowById(item.id);
+    if (!tr) return;
+    const before = curKey();
+    S.expectKey = '*';
+    fire(rowTarget(tr), 'dblclick', { detail: 2 });
+    const k = await waitFor(() => (curKey() !== before ? curKey() : null), 5000);
+    if (!k || stale() || !S.cols.includes(next)) return;
+    next.key = k;
+    next.pendingShortcut = false;
+    S.nativeDirty = true;
+    await waitSettled(k, stale);
+  }
+
+  // Elemento da lista nativa numa área sem itens (onde o Drive abre o menu "Nova pasta / Upload").
+  function nativeBlankTarget() {
+    const main = findMain();
+    if (!main) return null;
+    const mr = main.getBoundingClientRect();
+    const rows = nativeRows();
+    const bottom = rows.length ? rows[rows.length - 1].getBoundingClientRect().bottom : mr.top + 60;
+    if (bottom > mr.bottom - 24) return null;
+    const x = mr.left + mr.width / 2;
+    const y = (bottom + mr.bottom) / 2;
+    return document.elementsFromPoint(x, y).find((e) => main.contains(e) && !(ui.root && ui.root.contains(e))) || null;
+  }
+  // Botão do título da pasta no cabeçalho ("Projetos ▾"), que abre as ações da pasta atual.
+  function folderTitleButton() {
+    const main = findMain();
+    if (!main) return null;
+    const top = main.getBoundingClientRect().top;
+    const title = pageTitle();
+    return [...document.querySelectorAll('[role="button"][aria-haspopup="true"]')].find((b) => {
+      const r = b.getBoundingClientRect();
+      return r.height > 0 && r.bottom <= top && b.textContent.trim() === title;
+    }) || null;
+  }
+
+  async function nativeContextMenu(tr, x, y) {
+    const pos = { clientX: x, clientY: y, button: 2 };
+    let target = tr ? rowTarget(tr) : nativeBlankTarget();
+    if (!target && !tr) {
+      const btn = folderTitleButton();
+      if (btn) {
+        fire(btn, 'mousedown');
+        fire(btn, 'mouseup');
+        fire(btn, 'click');
+      }
+      return;
+    }
+    if (!target) return;
+    fire(target, 'mousedown', pos);
+    fire(target, 'mouseup', pos);
+    fire(target, 'contextmenu', pos);
+  }
+
+  function shortcutInit(key, code, keyCode, extra = {}) {
+    return { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true, composed: true, ...extra };
+  }
+  const DRIVE_MOD = IS_MAC ? { altKey: true, metaKey: true } : { altKey: true, ctrlKey: true };
+
+  function dispatchKeyToNative(init) {
+    const sel = nativeSelected();
+    const target = sel[0] || nativeGrid() || findMain();
+    if (!target) return;
+    target.dispatchEvent(new KeyboardEvent('keydown', init));
+    target.dispatchEvent(new KeyboardEvent('keyup', init));
+  }
+  async function forwardKey(init, { needsSelection = true } = {}) {
+    if (needsSelection) {
+      if (!(await prepareNative())) return;
+    } else {
+      const c = S.cols[S.active];
+      if (!c || !(await ensureNative(c.key))) return;
+    }
+    dispatchKeyToNative(init);
+  }
+
+  async function openSelected() {
+    const c = S.cols[S.active];
+    const items = selItems(c);
+    if (items.length !== 1) return;
+    if (items[0].isFolder) return goRight();
+    if (!(await prepareNative())) return;
+    const tr = rowById(items[0].id);
+    if (tr) {
+      nativeClick(tr);
+      fire(rowTarget(tr), 'dblclick', { detail: 2 });
+    }
+  }
+
+  // ================================================================ colunas: modelo
+
+  function makeCol(key, title, extra = {}) {
+    return {
+      key, title, items: S.cache.get(key) || null, byId: new Map((S.cache.get(key) || []).map((i) => [i.id, i])),
+      sel: new Set(), cursor: null, anchor: null, complete: false, error: false,
+      el: null, list: null, w: S.colW, ...extra,
+    };
+  }
+
+  function setItems(c, items, complete) {
+    const sigOld = c.items ? c.items.map((i) => i.id + i.name).join('|') : null;
+    const sigNew = items.map((i) => i.id + i.name).join('|');
+    c.items = items;
+    c.byId = new Map(items.map((i) => [i.id, i]));
+    c.error = false;
+    if (complete) c.complete = true;
+    const ci = S.cols.indexOf(c);
+    if (c.complete && !c.chain) {
+      let lost = false;
+      for (const id of [...c.sel]) {
+        if (!c.byId.has(id)) {
+          c.sel.delete(id);
+          lost = true;
+        }
+      }
+      if (lost && ci >= 0) {
+        truncateAfter(ci);
+        if (S.active > ci) S.active = ci;
+        if (c.sel.size === 1) openSelection(ci, false);
+        renderAll();
+      }
+    }
+    if (sigOld !== sigNew) fillCol(c);
+    if (ci >= 0 && ci === S.active && S.preview && !S.preview.multi && c.byId.has(S.preview.id)) {
+      S.preview = c.byId.get(S.preview.id);
+      renderPreview();
+    }
+    if (c.selectFirstOnLoad && items.length && ci === S.active) {
+      c.selectFirstOnLoad = false;
+      selectIds(ci, [items[0].id]);
+    }
+  }
+
+  function truncateAfter(ci) {
+    for (const c of S.cols.splice(ci + 1)) c.el && c.el.remove();
+    S.preview = null;
+  }
+
+  async function build() {
+    S.needsBuild = false;
+    const seq = ++S.buildSeq;
+    const stale = () => seq !== S.buildSeq;
+    for (const c of S.cols) c.el && c.el.remove();
+    S.userTouched = false;
+    const key = curKey();
+    const col0 = makeCol(key, pageTitle());
+    S.cols = [col0];
+    S.active = 0;
+    S.preview = null;
+    S.nativeDirty = true;
+    renderAll();
+    await waitSettled(key, stale);
+    if (stale() || !isFolderKey(key) || key === '/drive/my-drive') return;
+
+    // Caminho completo: as pastas ancestrais vêm do breadcrumb do cabeçalho.
+    await sleep(150);
+    const crumbs = scrapeCrumbs();
+    if (!crumbs.length || stale() || S.userTouched) return;
+    const ids = [...crumbs.map((c) => c.id), key.split('/').pop()];
+    const anc = crumbs.map((cr, i) => {
+      const c = makeCol(keyForId(cr.id), cr.name, { chain: true });
+      c.sel.add(ids[i + 1]);
+      c.cursor = c.anchor = ids[i + 1];
+      if (!c.items) c.lazy = true;
+      return c;
+    });
+    S.cols = [...anc, col0];
+    S.active = S.cols.length - 1;
+    renderAll();
+    scrollToEnd(false);
+    const done = () => {
+      for (const c of anc) c.chain = false;
+    };
+    for (let i = 0; i < anc.length; i++) {
+      if (stale() || S.userTouched) return done();
+      const c = anc[i];
+      if (!S.cols.includes(c)) continue;
+      c.lazy = false;
+      fillCol(c);
+      if (!(await ensureNative(c.key, () => stale() || S.userTouched))) continue;
+      // Espera o item da próxima coluna aparecer (pode estar além da primeira página).
+      await waitFor(() => stale() || S.userTouched || c.complete || (c.byId && c.byId.has(ids[i + 1])), 8000);
+      if (stale() || S.userTouched) return done();
+      if (!c.byId.has(ids[i + 1])) {
+        // Breadcrumb abreviado ("…"): o caminho não é contínuo; descarta as colunas até aqui.
+        const cut = S.cols.indexOf(c) + 1;
+        for (const k of S.cols.slice(0, cut)) k.el && k.el.remove();
+        S.cols = S.cols.slice(cut);
+        S.active = S.cols.length - 1;
+        renderAll();
+        continue;
+      }
+      paintSel(c);
+      scrollRowIntoView(c, c.cursor);
+    }
+    done();
+    if (!stale() && !S.userTouched) await ensureNative(key, () => stale() || S.userTouched);
+  }
+
+  // ================================================================ seleção e navegação
+
+  function selItems(c) {
+    return c ? [...c.sel].map((id) => c.byId.get(id)).filter(Boolean) : [];
+  }
+
+  function selectIds(ci, ids, { keepAnchor = false } = {}) {
+    const c = S.cols[ci];
+    if (!c) return;
+    c.sel = new Set(ids);
+    if (ids.length) {
+      c.cursor = ids[ids.length - 1];
+      if (!keepAnchor) c.anchor = ids[0];
+    }
+    afterSelect(ci);
+  }
+
+  function openSelection(ci, load = true) {
+    const c = S.cols[ci];
+    const items = selItems(c);
+    if (items.length === 1) {
+      const it = items[0];
+      if (it.isFolder) {
+        const nc = it.isShortcut
+          ? makeCol('shortcut:' + it.id, it.name, { pendingShortcut: true })
+          : makeCol(keyForId(it.id), it.name);
+        S.cols.push(nc);
+      } else {
+        S.preview = it;
+      }
+    } else if (items.length > 1) {
+      S.preview = { multi: items };
+    }
+    return load;
+  }
+
+  function afterSelect(ci) {
+    const c = S.cols[ci];
+    S.userTouched = true;
+    S.active = ci;
+    truncateAfter(ci);
+    openSelection(ci);
+    renderAll();
+    scrollToEnd(true);
+    scrollRowIntoView(c, c.cursor);
+    reconcile();
+  }
+
+  function onRowClick(e, ci, id) {
+    const c = S.cols[ci];
+    if (e.metaKey || e.ctrlKey) {
+      const next = new Set(c.sel);
+      next.has(id) ? next.delete(id) : next.add(id);
+      c.sel = next;
+      c.cursor = c.anchor = id;
+      afterSelect(ci);
+    } else if (e.shiftKey && c.anchor && c.byId.has(c.anchor)) {
+      const a = c.items.findIndex((i) => i.id === c.anchor);
+      const b = c.items.findIndex((i) => i.id === id);
+      const [lo, hi] = a < b ? [a, b] : [b, a];
+      c.sel = new Set(c.items.slice(lo, hi + 1).map((i) => i.id));
+      c.cursor = id;
+      afterSelect(ci);
+    } else {
+      if (c.sel.size === 1 && c.sel.has(id) && S.active === ci && S.cols.length > ci + 1 === selItems(c)[0]?.isFolder) {
+        reconcile();
+        return;
+      }
+      selectIds(ci, [id]);
+    }
+  }
+
+  function onBlankClick(ci) {
+    const c = S.cols[ci];
+    if (!c) return;
+    S.userTouched = true;
+    c.sel.clear();
+    S.active = ci;
+    truncateAfter(ci);
+    renderAll();
+    reconcile();
+  }
+
+  function moveCursor(delta, extend) {
+    const ci = S.active;
+    const c = S.cols[ci];
+    if (!c || !c.items || !c.items.length) return;
+    let idx = c.items.findIndex((i) => i.id === c.cursor);
+    idx = idx < 0 ? (delta > 0 ? 0 : c.items.length - 1) : Math.max(0, Math.min(c.items.length - 1, idx + delta));
+    const id = c.items[idx].id;
+    if (extend && c.anchor && c.byId.has(c.anchor)) {
+      const a = c.items.findIndex((i) => i.id === c.anchor);
+      const [lo, hi] = a < idx ? [a, idx] : [idx, a];
+      c.sel = new Set(c.items.slice(lo, hi + 1).map((i) => i.id));
+      c.cursor = id;
+      afterSelect(ci);
+    } else selectIds(ci, [id]);
+  }
+
+  function goRight() {
+    const ci = S.active;
+    const items = selItems(S.cols[ci]);
+    if (items.length !== 1 || !items[0].isFolder) return;
+    const next = S.cols[ci + 1];
+    if (!next) return;
+    if (next.items && next.items.length) selectIds(ci + 1, [next.items[0].id]);
+    else if (!next.items) {
+      next.selectFirstOnLoad = true;
+      S.active = ci + 1;
+      renderAll();
+    }
+  }
+
+  function goParent() {
+    const ci = S.active;
+    if (ci === 0) return;
+    S.cols[ci].sel.clear();
+    S.active = ci - 1;
+    truncateAfter(ci);
+    renderAll();
+    scrollRowIntoView(S.cols[ci - 1], S.cols[ci - 1].cursor);
+    reconcile();
+  }
+
+  function typeSelect(ch) {
+    const c = S.cols[S.active];
+    if (!c || !c.items) return;
+    clearTimeout(S.typeT);
+    S.typeBuf += norm(ch);
+    S.typeT = setTimeout(() => (S.typeBuf = ''), 900);
+    const hit = c.items.find((i) => norm(i.name).startsWith(S.typeBuf));
+    if (hit) selectIds(S.active, [hit.id]);
+  }
+
+  // ================================================================ UI
+
+  function buildUi() {
+    ui.root = h('div', { class: 'gdf-scope gdf-root', tabindex: '0', 'aria-label': 'Visualização em colunas' });
+    ui.strip = h('div', { class: 'gdf-strip' });
+    ui.root.append(ui.strip);
+    ui.layer = h('div', { class: 'gdf-scope gdf-layer' });
+    ui.root.addEventListener('mousedown', (e) => {
+      S.wantFocus = true;
+      if (!isEditable(e.target) && !e.target.closest('.gdf-resize')) setTimeout(focusRoot, 0);
+    });
+  }
+  function focusRoot() {
+    if (ui.root && ui.root.isConnected) ui.root.focus({ preventScroll: true });
+  }
+
+  function ensureColEl(c) {
+    if (c.el) return c.el;
+    const list = h('div', { class: 'gdf-list', role: 'listbox', 'aria-multiselectable': 'true' });
+    const grip = h('div', { class: 'gdf-resize', title: 'Arraste para redimensionar (⌥ redimensiona todas)' });
+    c.el = h('div', { class: 'gdf-col', style: { width: c.w + 'px' } }, list, grip);
+    c.list = list;
+    bindColumnEvents(c, list, grip);
+    fillCol(c);
+    return c.el;
+  }
+
+  function fillCol(c) {
+    if (!c.list) return;
+    const list = c.list;
+    const top = list.scrollTop;
+    if (c.lazy && !c.items) {
+      list.replaceChildren(h('div', { class: 'gdf-empty gdf-muted' }, 'Clique aqui para carregar'));
+    } else if (c.error && !c.items) {
+      list.replaceChildren(h('div', { class: 'gdf-empty gdf-muted' }, 'Não foi possível abrir esta pasta.'));
+    } else if (!c.items) {
+      list.replaceChildren(h('div', { class: 'gdf-empty' }, h('div', { class: 'gdf-spin' })));
+    } else if (!c.items.length) {
+      list.replaceChildren(h('div', { class: 'gdf-empty gdf-muted' }, 'Pasta vazia'));
+    } else {
+      const frag = document.createDocumentFragment();
+      for (const it of c.items) frag.append(rowEl(it));
+      if (!c.complete && c.items.length >= 50) frag.append(h('div', { class: 'gdf-more gdf-muted' }, h('div', { class: 'gdf-spin gdf-spin-sm' })));
+      list.replaceChildren(frag);
+      list.scrollTop = top;
+    }
+    paintSel(c);
+  }
+
+  function itemIcon(it, size) {
+    const node = it.icon ? it.icon.cloneNode(true) : icon(it.isFolder ? 'folder' : 'file', size);
+    node.setAttribute('width', size);
+    node.setAttribute('height', size);
+    node.style.width = node.style.height = size + 'px';
+    return h('span', { class: 'gdf-fico' }, node);
+  }
+
+  function rowEl(it) {
+    return h('div', {
+      class: 'gdf-row' + (it.isFolder ? ' is-folder' : ''),
+      'data-id': it.id,
+      role: 'option',
+      title: it.name,
+    },
+    itemIcon(it, 20),
+    h('span', { class: 'gdf-name' }, it.name),
+    it.isFolder ? h('span', { class: 'gdf-chev' }, icon('chevron', 18)) : null);
+  }
+
+  function paintSel(c) {
+    if (!c.el) return;
+    c.el.classList.toggle('active', S.cols.indexOf(c) === S.active);
+    for (const row of c.list.children) {
+      const id = row.dataset && row.dataset.id;
+      if (!id) continue;
+      const on = c.sel.has(id);
+      row.classList.toggle('sel', on);
+      row.setAttribute('aria-selected', on ? 'true' : 'false');
+    }
+  }
+
+  function renderAll() {
+    if (!ui.root) return;
+    const want = S.cols.map(ensureColEl);
+    for (const ch of [...ui.strip.children]) if (!want.includes(ch) && ch !== ui.preview) ch.remove();
+    want.forEach((el, i) => {
+      if (ui.strip.children[i] !== el) ui.strip.insertBefore(el, ui.strip.children[i] || null);
+    });
+    renderPreview();
+    S.cols.forEach(paintSel);
+  }
+
+  // ---------------------------------------------------------------- pré-visualização
+
+  function thumbUrl(it) {
+    return `https://drive.google.com/thumbnail?id=${encodeURIComponent(it.id)}&sz=w800&authuser=${authuser()}`;
+  }
+
+  function renderPreview() {
+    const p = S.preview;
+    if (!p) {
+      if (ui.preview) ui.preview.remove();
+      ui.previewKey = '';
+      return;
+    }
+    if (!ui.preview) ui.preview = h('div', { class: 'gdf-preview' });
+    const key = p.multi ? 'm:' + p.multi.map((i) => i.id).join(',') : `${p.id}|${p.name}|${JSON.stringify(p.info)}`;
+    if (key !== ui.previewKey) {
+      ui.previewKey = key;
+      ui.preview.replaceChildren(...(p.multi ? previewMulti(p.multi) : previewSingle(p)));
+    }
+    if (ui.strip.lastChild !== ui.preview) ui.strip.append(ui.preview);
+  }
+
+  function previewSingle(it) {
+    const thumb = h('div', { class: 'gdf-pv-thumb' });
+    const fallback = () => thumb.replaceChildren(h('div', { class: 'gdf-pv-icon' }, itemIcon(it, 96)));
+    if (!it.isShortcut) {
+      const img = h('img', { alt: '', draggable: 'false', src: thumbUrl(it) });
+      img.addEventListener('error', fallback, { once: true });
+      img.addEventListener('load', () => (img.naturalWidth > 1 ? img.classList.add('ok') : fallback()));
+      img.addEventListener('dblclick', () => openSelected());
+      thumb.append(img);
+    } else fallback();
+
+    const size = (it.info.find(([k]) => /tamanho|size/i.test(k)) || [])[1];
+    const rows = [['Tipo', it.type || '—'], ...it.info, ['Acesso', it.shared ? 'Compartilhado' : 'Particular']];
+    return [
+      thumb,
+      h('div', { class: 'gdf-pv-name' }, it.name),
+      h('div', { class: 'gdf-pv-kind' }, [it.type, size && size !== '—' ? size : null].filter(Boolean).join(' – ')),
+      h('div', { class: 'gdf-pv-actions' },
+        h('button', { class: 'gdf-btn', onclick: () => openSelected() }, icon('open', 18), 'Abrir'),
+        h('button', { class: 'gdf-btn gdf-btn-tonal', onclick: () => forwardKey(shortcutInit('p', 'KeyP', 80, DRIVE_MOD)) }, icon('eye', 18), 'Visualizar')),
+      h('div', { class: 'gdf-pv-sec' }, 'Informações'),
+      h('dl', { class: 'gdf-pv-info' }, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, v)])),
+      h('button', {
+        class: 'gdf-pv-more',
+        onclick: async (e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          if (!(await prepareNative())) return;
+          nativeContextMenu(rowById(it.id), r.left, r.bottom + 4);
+        },
+      }, icon('more', 18), 'Mais ações'),
+    ];
+  }
+
+  function previewMulti(items) {
+    const stack = h('div', { class: 'gdf-pv-stack' }, items.slice(0, 3).map((it) => h('div', { class: 'gdf-pv-stack-i' }, itemIcon(it, 88))));
+    return [
+      h('div', { class: 'gdf-pv-thumb' }, stack),
+      h('div', { class: 'gdf-pv-name' }, `${items.length} itens`),
+      h('div', { class: 'gdf-pv-kind' }, 'Use a barra acima ou o botão direito para agir sobre todos'),
+    ];
+  }
+
+  // ---------------------------------------------------------------- eventos das colunas
+
+  function bindColumnEvents(c, list, grip) {
+    const ciOf = () => S.cols.indexOf(c);
+    const rowOf = (e) => e.target.closest && e.target.closest('.gdf-row');
+
+    list.addEventListener('click', (e) => {
+      const ci = ciOf();
+      if (ci < 0) return;
+      const row = rowOf(e);
+      if (c.lazy && !c.items) {
+        // Coluna ancestral ainda não lida: carrega sem mexer nas colunas à direita.
+        c.lazy = false;
+        fillCol(c);
+        ++S.recSeq;
+        ensureNative(c.key);
+        return;
+      }
+      row ? onRowClick(e, ci, row.dataset.id) : onBlankClick(ci);
+    });
+    list.addEventListener('dblclick', (e) => {
+      const row = rowOf(e);
+      const it = row && c.byId.get(row.dataset.id);
+      if (it && !it.isFolder) openSelected();
+    });
+    list.addEventListener('contextmenu', async (e) => {
+      e.preventDefault();
+      const ci = ciOf();
+      const row = rowOf(e);
+      const { clientX: x, clientY: y } = e;
+      if (row) {
+        const id = row.dataset.id;
+        const next = S.cols[ci + 1];
+        // Pasta já aberta e carregada na coluna seguinte: mantém as colunas como estão.
+        const keep = c.sel.size === 1 && c.sel.has(id) && next && next.items && !next.pendingShortcut;
+        if (!c.sel.has(id)) {
+          c.sel = new Set([id]);
+          c.cursor = c.anchor = id;
+        }
+        S.active = ci;
+        S.userTouched = true;
+        if (!keep) {
+          truncateAfter(ci);
+          // Como no Finder, o clique direito numa pasta não abre a coluna dela.
+          const it = c.byId.get(id);
+          if (!(c.sel.size === 1 && it && it.isFolder)) openSelection(ci);
+        }
+        renderAll();
+        if (!(await prepareNative())) return;
+        nativeContextMenu(rowById(row.dataset.id), x, y);
+      } else {
+        onBlankClick(ci);
+        if (!(await prepareNative())) return;
+        nativeContextMenu(null, x, y);
+      }
+    });
+
+    grip.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const x0 = e.clientX;
+      const w0 = c.w;
+      const all = e.altKey;
+      const onMove = (ev) => {
+        const w = Math.max(MIN_COL_W, Math.min(MAX_COL_W, w0 + ev.clientX - x0));
+        for (const k of all ? S.cols : [c]) {
+          k.w = w;
+          if (k.el) k.el.style.width = w + 'px';
+        }
+        if (all) S.colW = w;
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove, true);
+        window.removeEventListener('mouseup', onUp, true);
+        document.documentElement.classList.remove('gdf-resizing');
+        if (all) storageSet({ gdfColW: S.colW });
+      };
+      document.documentElement.classList.add('gdf-resizing');
+      window.addEventListener('mousemove', onMove, true);
+      window.addEventListener('mouseup', onUp, true);
+    });
+  }
+
+  function scrollToEnd(smooth) {
+    requestAnimationFrame(() => ui.strip && ui.strip.scrollTo({ left: ui.strip.scrollWidth, behavior: smooth ? 'smooth' : 'auto' }));
+  }
+  function scrollRowIntoView(c, id) {
+    if (!c || !c.list || !id) return;
+    const row = c.list.querySelector(`.gdf-row[data-id="${CSS.escape(id)}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+  }
+
+  // ================================================================ teclado
+
+  // Registrado em document_start, antes dos atalhos do Drive: teclas digitadas nas colunas
+  // não chegam ao Drive diretamente — as que fazem sentido são repassadas à lista nativa.
+  for (const type of ['keydown', 'keypress', 'keyup']) {
+    window.addEventListener(type, (e) => {
+      if (!ui.root || !ui.root.contains(e.target)) return;
+      e.stopImmediatePropagation();
+      if (type === 'keydown') onKey(e);
+    }, true);
+  }
+
+  function onKey(e) {
+    const ci = S.active;
+    const c = S.cols[ci];
+    if (!c) return;
+    const mod = e.metaKey || e.ctrlKey;
+    const items = selItems(c);
+    const k = e.key;
+
+    // Atalhos do próprio Drive (⌥⌘A compartilhar, ⌥⌘M mover, ⌥⌘S estrela, ⌥⌘E renomear…)
+    if (e.altKey && mod && k.length === 1) {
+      e.preventDefault();
+      return forwardKey(shortcutInit(e.key, e.code, e.keyCode, { altKey: true, metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey }));
+    }
+    switch (k) {
+      case 'ArrowDown':
+        e.preventDefault();
+        if (mod) openSelected();
+        else moveCursor(1, e.shiftKey);
+        return;
+      case 'ArrowUp':
+        e.preventDefault();
+        mod ? goParent() : moveCursor(-1, e.shiftKey);
+        return;
+      case 'ArrowRight':
+        e.preventDefault();
+        goRight();
+        return;
+      case 'ArrowLeft':
+        e.preventDefault();
+        goParent();
+        return;
+      case ' ':
+        e.preventDefault();
+        if (items.length === 1 && !items[0].isFolder) forwardKey(shortcutInit('p', 'KeyP', 80, DRIVE_MOD));
+        return;
+      case 'Enter':
+      case 'F2':
+        e.preventDefault();
+        if (items.length === 1) forwardKey(shortcutInit('e', 'KeyE', 69, DRIVE_MOD));
+        return;
+      case 'Delete':
+      case 'Backspace':
+        if (k === 'Delete' || mod) {
+          e.preventDefault();
+          if (items.length) forwardKey(shortcutInit('Delete', 'Delete', 46));
+        }
+        return;
+      case 'Escape':
+        return;
+    }
+    if (mod) {
+      const l = k.toLowerCase();
+      if (l === 'a' && c.items) {
+        e.preventDefault();
+        c.sel = new Set(c.items.map((i) => i.id));
+        afterSelect(ci);
+      } else if (l === 'o') {
+        e.preventDefault();
+        openSelected();
+      } else if ((l === 'c' || l === 'x') && items.length) {
+        e.preventDefault();
+        forwardKey(shortcutInit(e.key, e.code, e.keyCode, { metaKey: e.metaKey, ctrlKey: e.ctrlKey }));
+      } else if (l === 'v') {
+        e.preventDefault();
+        forwardKey(shortcutInit(e.key, e.code, e.keyCode, { metaKey: e.metaKey, ctrlKey: e.ctrlKey }), { needsSelection: false });
+      }
+      return;
+    }
+    if (!e.altKey && k.length === 1 && /\S/.test(k)) {
+      e.preventDefault();
+      typeSelect(k);
+    }
+  }
+
+  // ================================================================ integração com o Drive
+
+  function isShowing() {
+    return !!(S.enabled && isSupported(S.key) && ui.root && ui.root.isConnected);
+  }
+
+  function readTheme(main) {
+    let el = main;
+    let bg = null;
+    while (el && el !== document.documentElement) {
+      const c = getComputedStyle(el).backgroundColor;
+      if (c && c !== 'rgba(0, 0, 0, 0)' && c !== 'transparent') {
+        bg = c;
+        break;
+      }
+      el = el.parentElement;
+    }
+    bg = bg || 'rgb(255, 255, 255)';
+    if (bg === S.bg) return;
+    const [r, g, b] = (bg.match(/\d+(\.\d+)?/g) || [255, 255, 255]).map(Number);
+    S.dark = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 < 0.45;
+    S.bg = bg;
+    for (const e of [ui.root, ui.layer]) {
+      e.classList.toggle('gdf-dark', S.dark);
+      e.style.setProperty('--gdf-bg', bg);
+    }
+  }
+
+  function layout() {
+    if (!ui.root || !ui.root.isConnected) return;
+    const main = findMain();
+    if (!main) {
+      ui.root.style.display = 'none';
+      return;
+    }
+    const r = main.getBoundingClientRect();
+    const top = Math.max(r.top, 0);
+    Object.assign(ui.root.style, {
+      display: '',
+      left: r.left + 'px',
+      top: top + 'px',
+      width: r.width + 'px',
+      height: Math.max(0, Math.min(r.bottom, innerHeight) - top) + 'px',
+    });
+    readTheme(main);
+  }
+
+  function learnToggleClasses(natives) {
+    if (S.toggleCls) return;
+    const on = natives.find((n) => n.getAttribute('aria-checked') === 'true');
+    const off = natives.find((n) => n.getAttribute('aria-checked') !== 'true');
+    if (!on || !off) return;
+    const a = new Set(on.classList);
+    const b = new Set(off.classList);
+    S.toggleCls = { on: [...a].filter((x) => !b.has(x)), off: [...b].filter((x) => !a.has(x)) };
+  }
+  function setRadio(btn, checked) {
+    const want = checked ? 'true' : 'false';
+    if (btn.getAttribute('aria-checked') !== want) btn.setAttribute('aria-checked', want);
+    if (S.toggleCls) {
+      for (const c of S.toggleCls.on) if (btn.classList.contains(c) !== checked) btn.classList.toggle(c, checked);
+      for (const c of S.toggleCls.off) if (btn.classList.contains(c) === checked) btn.classList.toggle(c, !checked);
+    }
+  }
+
+  function injectToggle() {
+    const list = document.querySelector('button[data-test-id="list-layout-button"]');
+    if (!list) return;
+    const group = list.parentElement;
+    const natives = [...group.querySelectorAll(':scope > button[role="radio"]:not(.gdf-toggle)')];
+    if (!natives.length) return;
+    if (!group.querySelector(':scope > .gdf-toggle')) {
+      learnToggleClasses(natives);
+      const last = natives[natives.length - 1];
+      const mine = last.cloneNode(true);
+      for (const el of [mine, ...mine.querySelectorAll('*')]) {
+        for (const a of ['jsaction', 'jscontroller', 'jsname', 'jscallback', 'jsmodel', 'jslog', 'data-test-id', 'aria-describedby', 'id', 'data-tooltip-enabled']) {
+          el.removeAttribute(a);
+        }
+      }
+      mine.classList.add('gdf-toggle');
+      mine.setAttribute('aria-label', 'Colunas');
+      mine.setAttribute('data-tooltip', 'Layout de colunas');
+      mine.setAttribute('title', 'Layout de colunas');
+      const slot = mine.querySelector('.znfGuf') || [...mine.querySelectorAll('svg')].pop()?.parentElement;
+      if (slot) slot.replaceChildren(columnsIcon());
+      for (const t of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'keydown', 'focus', 'mouseover', 'mouseout']) {
+        mine.addEventListener(t, (e) => e.stopPropagation());
+      }
+      mine.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onToggleClick();
+      });
+      last.style.borderRadius = '0';
+      last.after(mine);
+      for (const n of natives) {
+        if (n.__gdfBound) continue;
+        n.__gdfBound = true;
+        n.addEventListener('click', () => !S.ignoreNativeClick && S.enabled && setEnabled(false), true);
+      }
+      if (!group.__gdfObs) {
+        group.__gdfObs = new MutationObserver(() => paintToggle());
+        group.__gdfObs.observe(group, { attributes: true, subtree: true, attributeFilter: ['class', 'aria-checked'] });
+      }
+    }
+    paintToggle();
+  }
+
+  function paintToggle() {
+    const mine = document.querySelector('.gdf-toggle');
+    if (!mine) return;
+    const natives = [...mine.parentElement.querySelectorAll(':scope > button[role="radio"]:not(.gdf-toggle)')];
+    if (isShowing()) {
+      for (const n of natives) {
+        if (n.dataset.gdfSaved === undefined) n.dataset.gdfSaved = n.getAttribute('aria-checked') || 'false';
+        setRadio(n, false);
+      }
+      setRadio(mine, true);
+    } else {
+      setRadio(mine, false);
+      for (const n of natives) {
+        if (n.dataset.gdfSaved === undefined) continue;
+        const was = n.dataset.gdfSaved === 'true';
+        delete n.dataset.gdfSaved;
+        setRadio(n, was);
+      }
+    }
+    mine.classList.toggle('gdf-unavailable', !isSupported(S.key));
+  }
+
+  function onToggleClick() {
+    if (!isSupported(S.key)) {
+      toast('A visualização em colunas não está disponível nesta seção do Drive.');
+      return;
+    }
+    if (!S.enabled) setEnabled(true);
+  }
+
+  function storageSet(v) {
+    try {
+      EXT && EXT.storage.sync.set(v);
+    } catch {
+      /* contexto da extensão invalidado */
+    }
+  }
+
+  function setEnabled(v) {
+    S.enabled = v;
+    storageSet({ gdfEnabled: v });
+    if (v) {
+      S.wantFocus = true;
+      S.needsBuild = true;
+    } else {
+      ++S.recSeq;
+      ++S.buildSeq;
+      // A paginação automática rolou a lista nativa; devolve ao topo.
+      const sc = nativeScroller(nativeGrid());
+      if (sc) sc.scrollTop = 0;
+    }
+    update();
+    if (v) setTimeout(focusRoot, 50);
+  }
+
+  function update() {
+    const show = !!(S.enabled && isSupported(S.key) && findMain());
+    if (show) {
+      if (!ui.root.isConnected) document.body.append(ui.root);
+      layout();
+      if (S.needsBuild) build();
+    } else if (ui.root && ui.root.isConnected) {
+      ui.root.remove();
+    }
+    paintToggle();
+  }
+
+  function onUrlChange() {
+    const key = curKey();
+    S.key = key;
+    const expected = S.expectKey;
+    if (expected && (expected === key || expected === '*')) {
+      S.expectKey = null;
+      return update();
+    }
+    S.expectKey = null;
+    if (!isSupported(key)) return update();
+    // Voltar/avançar ou clique no breadcrumb para uma pasta que já está nas colunas.
+    const ci = S.cols.findIndex((c) => c.key === key);
+    if (ci >= 0 && !S.needsBuild) {
+      S.cols[ci].sel.clear();
+      S.active = ci;
+      truncateAfter(ci);
+      if (isShowing()) renderAll();
+      return update();
+    }
+    S.needsBuild = true;
+    update();
+  }
+
+  function tick() {
+    if (location.href !== S.lastHref) {
+      S.lastHref = location.href;
+      onUrlChange();
+    }
+    if (S.enabled && isSupported(S.key) && ui.root && !ui.root.isConnected && findMain()) update();
+    layout();
+    if (isShowing()) syncNative();
+  }
+
+  // ---------------------------------------------------------------- toast
+
+  let toastEl = null;
+  function toast(msg) {
+    if (toastEl) toastEl.remove();
+    const el = h('div', { class: 'gdf-toast', role: 'status' }, h('span', null, msg));
+    ui.layer.append(el);
+    toastEl = el;
+    setTimeout(() => el.remove(), 5000);
+  }
+
+  // ================================================================ boot
+
+  function throttle(fn, ms) {
+    let t = 0;
+    return () => {
+      if (t) return;
+      t = setTimeout(() => {
+        t = 0;
+        fn();
+      }, ms);
+    };
+  }
+
+  function start() {
+    buildUi();
+    document.body.append(ui.layer);
+    new MutationObserver(throttle(injectToggle, 150)).observe(document.body, { childList: true, subtree: true });
+    injectToggle();
+    tick();
+    setInterval(tick, 250);
+    window.addEventListener('resize', layout);
+    // Se o Drive focar a lista escondida (ao selecionarmos itens nela), devolve o foco às colunas.
+    document.addEventListener('focusin', (e) => {
+      if (!isShowing() || !S.wantFocus) return;
+      const main = findMain();
+      if (main && main.contains(e.target)) focusRoot();
+    }, true);
+    // Clicar em menus/diálogos nativos (abertos a partir das colunas) não tira o foco das colunas.
+    window.addEventListener('mousedown', (e) => {
+      const t = e.target;
+      if (S.firing || ui.root.contains(t)) return;
+      if (t.closest && t.closest('[role="menu"], [role="menuitem"], [role="dialog"], [role="alertdialog"], [role="listbox"]')) return;
+      S.wantFocus = false;
+    }, true);
+  }
+
+  Promise.resolve()
+    .then(() => (EXT ? EXT.storage.sync.get(['gdfEnabled', 'gdfColW']) : {}))
+    .catch(() => ({}))
+    .then((v) => {
+      S.enabled = !!(v && v.gdfEnabled);
+      S.colW = Math.max(MIN_COL_W, Math.min(MAX_COL_W, Number(v && v.gdfColW) || DEFAULT_COL_W));
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
+      else start();
+    });
+})();

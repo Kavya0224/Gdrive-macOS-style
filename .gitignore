@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# arquivos locais de teste
+.test/
+
+# chaves e credenciais
+*.pem
+*.key
+.env*

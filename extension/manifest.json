@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Drive Finder — visualização em colunas",
+  "short_name": "Drive Finder",
+  "version": "2.0.0",
+  "description": "Adiciona ao Google Drive uma visualização em colunas no estilo do Finder, com pré-visualização e informações do arquivo.",
+  "permissions": ["storage"],
+  "content_scripts": [
+    {
+      "matches": ["https://drive.google.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
+}
