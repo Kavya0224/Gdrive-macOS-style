@@ -1,5 +1,12 @@
 # GDrive macOS style
 
+[![Release](https://img.shields.io/github/v/release/luisfelipejimmy/Gdrive-macOS-style)](https://github.com/luisfelipejimmy/Gdrive-macOS-style/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/luisfelipejimmy/Gdrive-macOS-style)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/luisfelipejimmy/Gdrive-macOS-style?style=flat)](https://github.com/luisfelipejimmy/Gdrive-macOS-style/stargazers)
+[![Issues](https://img.shields.io/github/issues/luisfelipejimmy/Gdrive-macOS-style)](https://github.com/luisfelipejimmy/Gdrive-macOS-style/issues)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen)](CONTRIBUTING.md)
+[![Manifest V3](https://img.shields.io/badge/Chrome-Manifest%20V3-4285F4?logo=googlechrome&logoColor=white)](extension/manifest.json)
+
 A Chrome extension that adds a **Finder-style column view** to Google Drive.
 It uses no API and no credentials: it reads items from Drive's own list and forwards selection, menus and shortcuts
 to the native list, which keeps running (hidden) underneath the columns.
