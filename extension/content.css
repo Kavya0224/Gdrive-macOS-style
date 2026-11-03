@@ -21,6 +21,7 @@
   -webkit-font-smoothing: antialiased;
 }
 .gdf-scope.gdf-dark {
+  color-scheme: dark;
   --gdf-fg: #e3e3e3;
   --gdf-muted: #c4c7c5;
   --gdf-faint: #8e918f;
