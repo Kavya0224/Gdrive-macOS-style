@@ -24,7 +24,7 @@
     '^(?:' + SHARED_PFX + '\\s+)?(?:pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada|computador|computer|ordenador|ordinateur)\\b',
     'i'
   );
-  const SHARED_RE = new RegExp('^' + SHARED_PFX + '\\s+(?=(?:pasta|folder|carpeta|dossier|ordner|cartella)\\b)|\\s+' + SHARED_PFX + '$', 'i');
+  const SHARED_RE = new RegExp(String.raw`^${SHARED_PFX}\s+(?=(?:pasta|folder|carpeta|dossier|ordner|cartella)\b)|\s+${SHARED_PFX}$`, 'i');
   const SHORTCUT_RE = /\b(atalho|shortcut|acceso directo|raccourci|verknüpfung|scorciatoia)\b/i;
   const SUPPORTED_RE = /^\/drive\/(my-drive|folders\/[\w-]+|shared-with-me|recent|starred|trash|shared-drives|computers|search)\b/;
 
@@ -290,7 +290,7 @@
     const gridTop = grid ? grid.getBoundingClientRect().top : mr.top;
     const crumbs = [...document.querySelectorAll('[role="link"][data-id], [role="link"][data-view*="computers"]')]
       .filter((e) => {
-        if ((ui.root && ui.root.contains(e)) || (grid && grid.contains(e))) return false;
+        if (ui.root?.contains(e) || grid?.contains(e)) return false;
         const b = e.getBoundingClientRect();
         return b.height > 0 && b.left >= mr.left - 4 && b.bottom <= gridTop + 2;
       })
