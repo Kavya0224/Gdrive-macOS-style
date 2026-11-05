@@ -19,9 +19,9 @@
   const DEFAULT_COL_W = 260;
   const MIN_COL_W = 160;
   const MAX_COL_W = 640;
-  const SHARED_PFX = '(?:compartilhad[oa]|shared|compartido|partag[ée]e?|freigegeben\\w*|condiviso|condivisa)';
+  const SHARED_PFX = String.raw`(?:compartilhad[oa]|shared|compartido|partag[ée]e?|freigegeben\w*|condiviso|condivisa)`;
   const FOLDER_RE = new RegExp(
-    '^(?:' + SHARED_PFX + '\\s+)?(?:pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada|computador|computer|ordenador|ordinateur)\\b',
+    String.raw`^(?:${SHARED_PFX}\s+)?(?:pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada|computador|computer|ordenador|ordinateur)\b`,
     'i'
   );
   const SHARED_RE = new RegExp(String.raw`^${SHARED_PFX}\s+(?=(?:pasta|folder|carpeta|dossier|ordner|cartella)\b)|\s+${SHARED_PFX}$`, 'i');
