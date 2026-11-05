@@ -750,24 +750,14 @@
     // Depois, ao ligar as colunas ou navegar dentro do Drive, o caminho completo é sempre montado.
     const initial = S.initialBuild;
     S.initialBuild = false;
-        // right after: S.initialBuild = false;
-    console.log('[gdf] build', { key, initial, mode: S.pathMode });
-
     if (!isFolderKey(key) || key === '/drive/my-drive') return;
 
     // Modo "só a pasta" (padrão, como o Finder): na carga por URL, mostra apenas a coluna da pasta atual.
     if (initial && S.pathMode !== 'full') return;
     // Caminho completo: as pastas ancestrais vêm do breadcrumb do cabeçalho.
     let crumbs = await waitCrumbs(stale);
-    
-    // right after: let crumbs = await waitCrumbs(stale);
-    console.log('[gdf] crumbs', crumbs.map((c) => c.name + ' | ' + c.id));
     if (!crumbs.length || stale() || S.userTouched) return;
     crumbs = await expandCrumbs(crumbs, stale);
-    
-
-    // right after: crumbs = await expandCrumbs(crumbs, stale);
-    console.log('[gdf] expanded', crumbs.map((c) => c.name), 'rootId=', S.rootId);
     if (stale() || S.userTouched) return;
     const ids = [...crumbs.map((c) => c.id), key.split('/').pop()];
     const anc = crumbs.map((cr, i) => {
