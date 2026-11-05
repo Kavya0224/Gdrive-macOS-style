@@ -467,9 +467,10 @@
       const seen = new Set(all.map((c) => c.id || 'computers'));
       const fresh = up.filter((c) => !seen.has(c.id || 'computers'));
       if (!fresh.length) {
-      // Nada acima de "first". Em "Compartilhados comigo" e em Drives compartilhados isso também
-      // acontece, então só guarda como raiz quando o Drive abriu mesmo o Meu Drive.
-      if (!S.rootId && !quit() && curKey() === '/drive/my-drive') S.rootId = first.id;        break;
+        // Nada acima de "first". Em "Compartilhados comigo" e em Drives compartilhados isso também
+        // acontece, então só guarda como raiz quando o Drive abriu mesmo o Meu Drive.
+        if (!S.rootId && !quit() && curKey() === '/drive/my-drive') S.rootId = first.id;  
+        break;      
       }
       all = [...fresh, ...all];
     }
