@@ -53,8 +53,11 @@ The extension depends on Drive's internal HTML, which Google changes without not
   Done: in Computers the columns read the `div[role="gridcell"][data-id]` cards; each computer opens as a folder. When opening a computer folder by URL, the path starts at the "Computers" column (breadcrumb with `data-view="…computers…"`). Tested: list, opening the computer, context menu and full path to `Documents`.
 - [ ] Keys that modify files: Delete/⌘⌫ (trash), ⌘C/⌘X/⌘V. Test with throwaway files.
   (Drive's menu shows "Make a copy: ⌘C, then ⌘V" and has no cut; in the test with simulated keys, ⌘X → ⌘V moved nothing.)
-- [ ] **Path when opening by URL:** when loading the page directly into a subfolder, sometimes only that folder's column appears,
-  without its ancestors. Toggling the columns off and on builds the path. Seen on 2026-11-02 during the tests for item 2.
+- [ ] **Path when opening by URL (design decision):** when loading the page directly into a subfolder, only that folder's column appears,
+  without its ancestors. This matches Finder (jumping straight to a folder shows just that column), so it is not a bug.
+  Toggling the columns off and on builds the full path. Seen on 2026-11-02 during the tests for item 2.
+  Still to check: it was *intermittent* (sometimes the ancestors did show up), which would be an inconsistency worth understanding.
+  Possible optional enhancement: always build the full path when opening by URL, going beyond what Finder does.
 
 ## 6. Distribution
 
