@@ -48,6 +48,7 @@
     recSeq: 0,
     userTouched: false,
     colW: DEFAULT_COL_W,
+    pathMode: 'folder', // 'folder' | 'path'
     cache: new Map(), // chave da pasta -> itens
     typeBuf: '',
     typeT: 0,
@@ -433,6 +434,43 @@
     return null;
   }
 
+  // Espera o breadcrumb do cabeçalho aparecer e ficar estável (mesmo resultado em leituras seguidas).
+  // Devolve [] se estourar o tempo, ficar obsoleto ou o usuário mexer nas colunas.
+  async function waitCrumbs(isStale, ms = 5000) {
+    let prev = '';
+    let same = 0;
+    const found = await waitFor(() => {
+      if (isStale() || S.userTouched) return [];
+      const cr = scrapeCrumbs();
+      const sig = cr.map((c) => c.id || 'computers').join('/');
+      same = cr.length && sig === prev ? same + 1 : 0;
+      prev = sig;
+      return same >= 2 ? cr : null;
+    }, ms);
+    return found || [];
+  }
+
+  // Breadcrumb abreviado ("…"): sobe uma pasta por vez e lê o breadcrumb de novo, até chegar à raiz.
+  // Cada passo revela as pastas que ficavam escondidas atrás do "…".
+  async function expandCrumbs(crumbs, isStale) {
+    let all = crumbs;
+    const quit = () => isStale() || S.userTouched;
+    for (let n = 0; n < 30 && !quit(); n++) {
+      const first = all[0];
+      if (!first || !first.id || (S.rootId && first.id === S.rootId)) break; // Computadores ou Meu Drive: é a raiz
+      if (!(await ensureNative(first.key, quit))) break;
+      const up = await waitCrumbs(isStale, 2000);
+      const seen = new Set(all.map((c) => c.id || 'computers'));
+      const fresh = up.filter((c) => !seen.has(c.id || 'computers'));
+      if (!fresh.length) {
+        if (!S.rootId && !quit()) S.rootId = first.id; // nada acima: "first" é o Meu Drive
+        break;
+      }
+      all = [...fresh, ...all];
+    }
+    return all;
+  }
+
   function ensureListLayout(main, grid) {
     if (!main || S.ignoreNativeClick || nativeRows(grid).length) return;
     if (!main.querySelector('[data-id]')) return;
@@ -704,9 +742,13 @@
     if (stale() || !isFolderKey(key) || key === '/drive/my-drive') return;
 
     // Caminho completo: as pastas ancestrais vêm do breadcrumb do cabeçalho.
-    await sleep(150);
-    const crumbs = scrapeCrumbs();
+    // Modo "só a pasta" (padrão, como o Finder): mostra apenas a coluna da pasta atual, sempre igual.
+    if (S.pathMode !== 'full') return;
+    // Caminho completo: as pastas ancestrais vêm do breadcrumb do cabeçalho.
+    let crumbs = await waitCrumbs(stale);
     if (!crumbs.length || stale() || S.userTouched) return;
+    crumbs = await expandCrumbs(crumbs, stale);
+    if (stale() || S.userTouched) return;
     const ids = [...crumbs.map((c) => c.id), key.split('/').pop()];
     const anc = crumbs.map((cr, i) => {
       const c = makeCol(cr.key, cr.name, { chain: true });
@@ -1737,9 +1779,45 @@
     paintToggle();
   }
 
+  function setPathMode(v) {
+    S.pathMode = v === 'full' ? 'full' : 'folder';
+    storageSet({ gdfPathMode: S.pathMode });
+    paintPathMode();
+  }
+
+  function paintPathMode() {
+    const b = document.querySelector('.gdf-pathmode');
+    if (!b) return;
+    const full = S.pathMode === 'full';
+    b.hidden = !S.enabled;
+    b.textContent = full ? 'Caminho' : 'Pasta';
+    b.setAttribute('aria-pressed', String(full));
+    b.title = full
+      ? 'Ao abrir uma pasta por URL: mostra o caminho completo (clique para mostrar só a pasta)'
+      : 'Ao abrir uma pasta por URL: mostra só a pasta (clique para mostrar o caminho completo)';
+  }
+
+  function injectPathMode(group) {
+    if (document.querySelector('.gdf-pathmode')) return;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'gdf-pathmode';
+    for (const t of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'keydown', 'focus']) {
+      b.addEventListener(t, (e) => e.stopPropagation());
+    }
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setPathMode(S.pathMode === 'full' ? 'folder' : 'full');
+    });
+    group.after(b);
+  }
+
   function paintToggle() {
     const mine = document.querySelector('.gdf-toggle');
     if (!mine) return;
+    injectPathMode(mine.parentElement);
+    paintPathMode();
     const natives = [...mine.parentElement.querySelectorAll(':scope > button[role="radio"]:not(.gdf-toggle)')];
     if (isShowing()) {
       for (const n of natives) {
@@ -2138,11 +2216,12 @@
   // Tira o #gdf-teste da URL antes de o Drive iniciar (o teste em si roda no start()).
   if (WANT_TEST) maybeTestFromHash();
 
-  Promise.resolve()
-    .then(() => (EXT ? EXT.storage.sync.get(['gdfEnabled', 'gdfColW']) : {}))
+Promise.resolve()
+    .then(() => (EXT ? EXT.storage.sync.get(['gdfEnabled', 'gdfColW', 'gdfPathMode']) : {}))
     .catch(() => ({}))
     .then((v) => {
       S.enabled = !!(v && v.gdfEnabled);
+      S.pathMode = v && v.gdfPathMode === 'full' ? 'full' : 'folder';
       S.colW = Math.max(MIN_COL_W, Math.min(MAX_COL_W, Number(v && v.gdfColW) || DEFAULT_COL_W));
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
       else start();
