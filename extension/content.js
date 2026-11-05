@@ -19,9 +19,13 @@
   const DEFAULT_COL_W = 260;
   const MIN_COL_W = 160;
   const MAX_COL_W = 640;
-  const FOLDER_RE = /^(pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada|computador|computer|ordenador|ordinateur)\b/i;
+  const SHARED_PFX = '(?:compartilhad[oa]|shared|compartido|partag[ée]e?|freigegeben\\w*|condiviso|condivisa)';
+  const FOLDER_RE = new RegExp(
+    '^(?:' + SHARED_PFX + '\\s+)?(?:pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada|computador|computer|ordenador|ordinateur)\\b',
+    'i'
+  );
+  const SHARED_RE = new RegExp('^' + SHARED_PFX + '\\s+(?=(?:pasta|folder|carpeta|dossier|ordner|cartella)\\b)|\\s+' + SHARED_PFX + '$', 'i');
   const SHORTCUT_RE = /\b(atalho|shortcut|acceso directo|raccourci|verknüpfung|scorciatoia)\b/i;
-  const SHARED_RE = /\s+(compartilhad[oa]|shared|compartido|partagé|freigegeben|condiviso)$/i;
   const SUPPORTED_RE = /^\/drive\/(my-drive|folders\/[\w-]+|shared-with-me|recent|starred|trash|shared-drives|computers|search)\b/;
 
   const ICONS = {
@@ -39,6 +43,7 @@
     enabled: false,
     key: null, // chave da rota atual (/drive/...)
     needsBuild: true,
+    initialBuild: false, // a próxima construção é a da carga da página por URL (só ela usa pathMode)
     lastHref: '',
     expectKey: null, // navegação iniciada pela extensão
     cols: [],
@@ -48,7 +53,7 @@
     recSeq: 0,
     userTouched: false,
     colW: DEFAULT_COL_W,
-    pathMode: 'folder', // 'folder' | 'path'
+    pathMode: 'full', // 'folder' | 'path'
     cache: new Map(), // chave da pasta -> itens
     typeBuf: '',
     typeT: 0,
@@ -281,22 +286,21 @@
     const main = findMain();
     if (!main) return [];
     const mr = main.getBoundingClientRect();
-    // Pastas de um computador começam em "Computadores", que não tem data-id (só data-view="…computers…").
+    const grid = nativeGrid(main);
+    const gridTop = grid ? grid.getBoundingClientRect().top : mr.top;
     const crumbs = [...document.querySelectorAll('[role="link"][data-id], [role="link"][data-view*="computers"]')]
       .filter((e) => {
-        if (main.contains(e) || (ui.root && ui.root.contains(e))) return false;
+        if ((ui.root && ui.root.contains(e)) || (grid && grid.contains(e))) return false;
         const b = e.getBoundingClientRect();
-        return b.height > 0 && b.left >= mr.left - 4 && b.bottom <= mr.top + 2;
+        return b.height > 0 && b.left >= mr.left - 4 && b.bottom <= gridTop + 2;
       })
       .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
       .map((e) => {
         const id = e.getAttribute('data-id');
         return { id, key: id ? keyForId(id) : COMPUTERS_KEY, name: e.textContent.trim() };
       });
-    // "Computadores" só faz sentido como raiz do caminho.
     return crumbs.filter((c, i) => c.id || i === 0);
   }
-
   // ================================================================ sincronização com a lista nativa
 
   function natCheckKey() {
@@ -463,8 +467,9 @@
       const seen = new Set(all.map((c) => c.id || 'computers'));
       const fresh = up.filter((c) => !seen.has(c.id || 'computers'));
       if (!fresh.length) {
-        if (!S.rootId && !quit()) S.rootId = first.id; // nada acima: "first" é o Meu Drive
-        break;
+      // Nada acima de "first". Em "Compartilhados comigo" e em Drives compartilhados isso também
+      // acontece, então só guarda como raiz quando o Drive abriu mesmo o Meu Drive.
+      if (!S.rootId && !quit() && curKey() === '/drive/my-drive') S.rootId = first.id;        break;
       }
       all = [...fresh, ...all];
     }
@@ -739,15 +744,29 @@
     S.nativeDirty = true;
     renderAll();
     await waitSettled(key, stale);
-    if (stale() || !isFolderKey(key) || key === '/drive/my-drive') return;
+    if (stale()) return;
+    // Só a primeira construção (carga da página por URL) segue a preferência Pasta/Caminho.
+    // Depois, ao ligar as colunas ou navegar dentro do Drive, o caminho completo é sempre montado.
+    const initial = S.initialBuild;
+    S.initialBuild = false;
+        // right after: S.initialBuild = false;
+    console.log('[gdf] build', { key, initial, mode: S.pathMode });
 
-    // Caminho completo: as pastas ancestrais vêm do breadcrumb do cabeçalho.
-    // Modo "só a pasta" (padrão, como o Finder): mostra apenas a coluna da pasta atual, sempre igual.
-    if (S.pathMode !== 'full') return;
+    if (!isFolderKey(key) || key === '/drive/my-drive') return;
+
+    // Modo "só a pasta" (padrão, como o Finder): na carga por URL, mostra apenas a coluna da pasta atual.
+    if (initial && S.pathMode !== 'full') return;
     // Caminho completo: as pastas ancestrais vêm do breadcrumb do cabeçalho.
     let crumbs = await waitCrumbs(stale);
+    
+    // right after: let crumbs = await waitCrumbs(stale);
+    console.log('[gdf] crumbs', crumbs.map((c) => c.name + ' | ' + c.id));
     if (!crumbs.length || stale() || S.userTouched) return;
     crumbs = await expandCrumbs(crumbs, stale);
+    
+
+    // right after: crumbs = await expandCrumbs(crumbs, stale);
+    console.log('[gdf] expanded', crumbs.map((c) => c.name), 'rootId=', S.rootId);
     if (stale() || S.userTouched) return;
     const ids = [...crumbs.map((c) => c.id), key.split('/').pop()];
     const anc = crumbs.map((cr, i) => {
@@ -1861,6 +1880,7 @@
     if (v) {
       S.wantFocus = true;
       S.needsBuild = true;
+      S.initialBuild = false; // ligar pelo botão não é carga por URL: monta o caminho completo
     } else {
       ++S.recSeq;
       ++S.buildSeq;
@@ -2221,6 +2241,7 @@ Promise.resolve()
     .catch(() => ({}))
     .then((v) => {
       S.enabled = !!(v && v.gdfEnabled);
+      S.initialBuild = S.enabled; // colunas já ligadas na carga: esta primeira construção usa pathMode
       S.pathMode = v?.gdfPathMode === 'full' ? 'full' : 'folder';
       S.colW = Math.max(MIN_COL_W, Math.min(MAX_COL_W, Number(v && v.gdfColW) || DEFAULT_COL_W));
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });

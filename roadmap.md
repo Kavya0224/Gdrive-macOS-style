@@ -57,7 +57,8 @@ The extension depends on Drive's internal HTML, which Google changes without not
   without its ancestors. This matches Finder (jumping straight to a folder shows just that column), so it is not a bug.
   Toggling the columns off and on builds the full path. Seen on 2026-11-02 during the tests for item 2.
 
-  Done (#5): the result was *intermittent* because `build()` waited a fixed `sleep(150)` and read the breadcrumb once, so it depended on how fast Drive rendered the header. Now there is a setting (`gdfPathMode` in `storage.sync`, button next to Columns): *Folder* (default) shows only the current folder when the page is loaded by URL; *Path* waits (`waitCrumbs`, 5 s timeout) for a stable breadcrumb and also walks up through folders hidden behind "…" (`expandCrumbs`). Turning Columns on and navigating inside Drive still build the path from the breadcrumb, as before. Tested: [what you ran: reloads per mode at 4x CPU throttling, Computers, abbreviated breadcrumb, Shared with me, drag and drop].
+  Done (#5): the result was *intermittent* because `build()` waited a fixed `sleep(150)` and read the breadcrumb once, so it depended on how fast Drive rendered the header. Now there is a setting (`gdfPathMode` in `storage.sync`, button next to Columns): *Folder* (default) shows only the current folder when the page is loaded by URL; *Path* waits (`waitCrumbs`, 5 s timeout) for a stable breadcrumb and also walks up through folders hidden behind "…" (`expandCrumbs`). Turning Columns on and navigating inside Drive still build the path from the breadcrumb, as before. 
+  Tested: page reloads by URL in both modes (Folder and Path) at 4x CPU throttling; turning Columns on and navigating inside Drive builds the full path in Folder mode; Computers; abbreviated breadcrumb ("…"); folder opened from Shared with me (`rootId` stays unset); drag and drop.
 
 ## 6. Distribution
 
