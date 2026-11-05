@@ -457,7 +457,7 @@
     const quit = () => isStale() || S.userTouched;
     for (let n = 0; n < 30 && !quit(); n++) {
       const first = all[0];
-      if (!first || !first.id || (S.rootId && first.id === S.rootId)) break; // Computadores ou Meu Drive: é a raiz
+      if (!first?.id || (S.rootId && first.id === S.rootId)) break;      
       if (!(await ensureNative(first.key, quit))) break;
       const up = await waitCrumbs(isStale, 2000);
       const seen = new Set(all.map((c) => c.id || 'computers'));
@@ -2221,7 +2221,7 @@ Promise.resolve()
     .catch(() => ({}))
     .then((v) => {
       S.enabled = !!(v && v.gdfEnabled);
-      S.pathMode = v && v.gdfPathMode === 'full' ? 'full' : 'folder';
+      S.pathMode = v?.gdfPathMode === 'full' ? 'full' : 'folder';
       S.colW = Math.max(MIN_COL_W, Math.min(MAX_COL_W, Number(v && v.gdfColW) || DEFAULT_COL_W));
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
       else start();
