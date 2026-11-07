@@ -19,13 +19,9 @@
   const DEFAULT_COL_W = 260;
   const MIN_COL_W = 160;
   const MAX_COL_W = 640;
-  const SHARED_PFX = String.raw`(?:compartilhad[oa]|shared|compartido|partag[ée]e?|freigegeben\w*|condiviso|condivisa)`;
-  const FOLDER_RE = new RegExp(
-    String.raw`^(?:${SHARED_PFX}\s+)?(?:pasta|folder|carpeta|dossier|ordner|cartella|drive compartilhado|shared drive|unidade compartilhada|computador|computer|ordenador|ordinateur)\b`,
-    'i'
-  );
-  const SHARED_RE = new RegExp(String.raw`^${SHARED_PFX}\s+(?=(?:pasta|folder|carpeta|dossier|ordner|cartella)\b)|\s+${SHARED_PFX}$`, 'i');
+  const FOLDER_RE = /^(pasta|folder|shared folder|carpeta|dossier|ordner|freigegebener ordner|cartella|drive compartilhado|shared drive|unidade compartilhada|computador|computer|ordenador|ordinateur)\b/i;
   const SHORTCUT_RE = /\b(atalho|shortcut|acceso directo|raccourci|verknüpfung|scorciatoia)\b/i;
+  const SHARED_RE = /\s+(compartilhad[oa]|shared|compartido|partagé|freigegeben|condiviso)$/i;
   const SUPPORTED_RE = /^\/drive\/(my-drive|folders\/[\w-]+|shared-with-me|recent|starred|trash|shared-drives|computers|search)\b/;
 
   const ICONS = {
@@ -53,7 +49,7 @@
     recSeq: 0,
     userTouched: false,
     colW: DEFAULT_COL_W,
-    pathMode: 'full', // 'folder' | 'path'
+    pathMode: 'folder', // 'folder' | 'path'
     cache: new Map(), // chave da pasta -> itens
     typeBuf: '',
     typeT: 0,
@@ -286,19 +282,19 @@
     const main = findMain();
     if (!main) return [];
     const mr = main.getBoundingClientRect();
-    const grid = nativeGrid(main);
-    const gridTop = grid ? grid.getBoundingClientRect().top : mr.top;
+    // Pastas de um computador começam em "Computadores", que não tem data-id (só data-view="…computers…").
     const crumbs = [...document.querySelectorAll('[role="link"][data-id], [role="link"][data-view*="computers"]')]
       .filter((e) => {
-        if (ui.root?.contains(e) || grid?.contains(e)) return false;
+        if (main.contains(e) || (ui.root && ui.root.contains(e))) return false;
         const b = e.getBoundingClientRect();
-        return b.height > 0 && b.left >= mr.left - 4 && b.bottom <= gridTop + 2;
+        return b.height > 0 && b.left >= mr.left - 4 && b.bottom <= mr.top + 2;
       })
       .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
       .map((e) => {
         const id = e.getAttribute('data-id');
         return { id, key: id ? keyForId(id) : COMPUTERS_KEY, name: e.textContent.trim() };
       });
+    // "Computadores" só faz sentido como raiz do caminho.
     return crumbs.filter((c, i) => c.id || i === 0);
   }
   // ================================================================ sincronização com a lista nativa
@@ -461,7 +457,7 @@
     const quit = () => isStale() || S.userTouched;
     for (let n = 0; n < 30 && !quit(); n++) {
       const first = all[0];
-      if (!first?.id || (S.rootId && first.id === S.rootId)) break;      
+      if (!first?.id || (S.rootId && first.id === S.rootId)) break;
       if (!(await ensureNative(first.key, quit))) break;
       const up = await waitCrumbs(isStale, 2000);
       const seen = new Set(all.map((c) => c.id || 'computers'));
@@ -469,8 +465,8 @@
       if (!fresh.length) {
         // Nada acima de "first". Em "Compartilhados comigo" e em Drives compartilhados isso também
         // acontece, então só guarda como raiz quando o Drive abriu mesmo o Meu Drive.
-        if (!S.rootId && !quit() && curKey() === '/drive/my-drive') S.rootId = first.id;  
-        break;      
+        if (!S.rootId && !quit() && curKey() === '/drive/my-drive') S.rootId = first.id;
+        break;
       }
       all = [...fresh, ...all];
     }
@@ -2227,7 +2223,7 @@
   // Tira o #gdf-teste da URL antes de o Drive iniciar (o teste em si roda no start()).
   if (WANT_TEST) maybeTestFromHash();
 
-Promise.resolve()
+  Promise.resolve()
     .then(() => (EXT ? EXT.storage.sync.get(['gdfEnabled', 'gdfColW', 'gdfPathMode']) : {}))
     .catch(() => ({}))
     .then((v) => {
@@ -2238,4 +2234,4 @@ Promise.resolve()
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start, { once: true });
       else start();
     });
-})();
+  })();
